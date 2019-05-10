@@ -52,18 +52,18 @@
  * device (there might be several virtio proc devices for each physical
  * remote processor).
  */
-struct virtproc_info {
-	struct virtio_device *vdev;
-	struct virtqueue *rvq, *svq;
+struct virtproc_info { //*modify*///*can change*/
+	struct virtio_device *vdev; //*modify*///*serdev*/
+	struct virtqueue *rvq, *svq; //*modify*///*new mechanism*/
 	void *rbufs, *sbufs;
 	unsigned int num_bufs;
 	unsigned int buf_size;
 	int last_sbuf;
-	dma_addr_t bufs_dma;
+	dma_addr_t bufs_dma; //*modify*///*useless*/
 	struct mutex tx_lock;
 	struct idr endpoints;
 	struct mutex endpoints_lock;
-	wait_queue_head_t sendq;
+	wait_queue_head_t sendq; //*modify*///*specific*/
 	atomic_t sleepers;
 	struct rpmsg_endpoint *ns_ept;
 };
@@ -207,7 +207,7 @@ rpmsg_sg_init(struct scatterlist *sg, void *cpu_addr, unsigned int len)
 		WARN_ON(!virt_addr_valid(cpu_addr));
 		sg_init_one(sg, cpu_addr, len);
 	}
-}
+}  //*modify*///*useless ?*/
 
 /**
  * __ept_release() - deallocate an rpmsg endpoint
@@ -331,6 +331,7 @@ static int virtio_rpmsg_announce_create(struct rpmsg_device *rpdev)
 	int err = 0;
 
 	/* need to tell remote processor's name service about this channel ? */
+	//*modify*///*uart version*/ --> virtio_has_feature...
 	if (rpdev->announce && rpdev->ept &&
 	    virtio_has_feature(vrp->vdev, VIRTIO_RPMSG_F_NS)) {
 		struct rpmsg_ns_msg nsm;
@@ -355,6 +356,7 @@ static int virtio_rpmsg_announce_destroy(struct rpmsg_device *rpdev)
 	int err = 0;
 
 	/* tell remote processor's name service we're removing this channel */
+	//*modify*///*uart version*/ --> virtio_has_feature...
 	if (rpdev->announce && rpdev->ept &&
 	    virtio_has_feature(vrp->vdev, VIRTIO_RPMSG_F_NS)) {
 		struct rpmsg_ns_msg nsm;
@@ -456,6 +458,7 @@ static void *get_a_tx_buf(struct virtproc_info *vrp)
 	/* or recycle a used one */
 	else
 		ret = virtqueue_get_buf(vrp->svq, &len);
+		//*modify*///*uart version*/
 
 	mutex_unlock(&vrp->tx_lock);
 
@@ -487,9 +490,10 @@ static void rpmsg_upref_sleepers(struct virtproc_info *vrp)
 	if (atomic_inc_return(&vrp->sleepers) == 1)
 		/* enable "tx-complete" interrupts before dozing off */
 		virtqueue_enable_cb(vrp->svq);
+		//*modify*///*uart version*/
 
 	mutex_unlock(&vrp->tx_lock);
-}
+} //*modify*///*useless ?*/
 
 /**
  * rpmsg_downref_sleepers() - disable "tx-complete" interrupts, if needed
@@ -514,9 +518,10 @@ static void rpmsg_downref_sleepers(struct virtproc_info *vrp)
 	if (atomic_dec_and_test(&vrp->sleepers))
 		/* disable "tx-complete" interrupts */
 		virtqueue_disable_cb(vrp->svq);
+		//*modify*///*uart version*/
 
 	mutex_unlock(&vrp->tx_lock);
-}
+}//*modify*///*useless ?*/
 
 /**
  * rpmsg_send_offchannel_raw() - send a message across to the remote processor
@@ -552,6 +557,7 @@ static void rpmsg_downref_sleepers(struct virtproc_info *vrp)
  *
  * Returns 0 on success and an appropriate error value on failure.
  */
+//*modify*///*uart version*/ 100% changed to work with serdev
 static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 				     u32 src, u32 dst,
 				     void *data, int len, bool wait)
@@ -648,7 +654,7 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 out:
 	mutex_unlock(&vrp->tx_lock);
 	return err;
-}
+}//*modify*///*uart version*/
 
 static int virtio_rpmsg_send(struct rpmsg_endpoint *ept, void *data, int len)
 {
@@ -707,7 +713,14 @@ static int virtio_get_buffer_size(struct rpmsg_endpoint *ept)
 	struct virtproc_info *vrp = vch->vrp;
 
 	return vrp->buf_size;
-}
+}//*modify*///*uart version*/
+
+/***************************************************************/
+//*modify*///*uart version*/
+/**
+ * The receive part need to be adapted, because its 100% virtIO based 
+ */ 
+/***************************************************************/
 
 static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 			     struct rpmsg_hdr *msg, unsigned int len)
@@ -762,6 +775,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 	/* publish the real size of the buffer */
 	rpmsg_sg_init(&sg, msg, vrp->buf_size);
 
+	//*modify*///*uart version*/ virtqueue_add_inbuff...
 	/* add the buffer back to the remote processor's virtqueue */
 	err = virtqueue_add_inbuf(vrp->rvq, &sg, 1, msg, GFP_KERNEL);
 	if (err < 0) {
@@ -773,6 +787,7 @@ static int rpmsg_recv_single(struct virtproc_info *vrp, struct device *dev,
 }
 
 /* called when an rx buffer is used, and it's time to digest a message */
+//*modify*///*uart version*/ Used by a virtIO process 
 static void rpmsg_recv_done(struct virtqueue *rvq)
 {
 	struct virtproc_info *vrp = rvq->vdev->priv;
@@ -820,6 +835,10 @@ static void rpmsg_xmit_done(struct virtqueue *svq)
 	/* wake up potential senders that are waiting for a tx buffer */
 	wake_up_interruptible(&vrp->sendq);
 }
+
+/**************************************************************/
+//*modify*///*uart version*/  end of the 'receive' part
+/**************************************************************/
 
 /* invoked when a name service announcement arrives */
 static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
@@ -877,6 +896,7 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
 	return 0;
 }
 
+//*modify*///**/ Probe function must be of course changed 
 static int rpmsg_probe(struct virtio_device *vdev)
 {
 	vq_callback_t *vq_cbs[] = { rpmsg_recv_done, rpmsg_xmit_done };
@@ -1006,6 +1026,9 @@ static int rpmsg_remove_device(struct device *dev, void *data)
 	return 0;
 }
 
+/********************************************************************/
+//*modify*///**/ VIRTIO ZONE need serdev replacement 
+/********************************************************************/
 static void rpmsg_remove(struct virtio_device *vdev)
 {
 	struct virtproc_info *vrp = vdev->priv;
@@ -1029,17 +1052,17 @@ static void rpmsg_remove(struct virtio_device *vdev)
 			  vrp->rbufs, vrp->bufs_dma);
 
 	kfree(vrp);
-}
+}//*modify*///*uart version*/ 
 
 static struct virtio_device_id id_table[] = {
 	{ VIRTIO_ID_RPMSG, VIRTIO_DEV_ANY_ID },
 	{ 0 },
-};
+};//*modify*///*serdev match table*/ 
 MODULE_DEVICE_TABLE(virtio, id_table);
 
 static unsigned int features[] = {
 	VIRTIO_RPMSG_F_NS,
-};
+};//*modify*///**/ this virtIO based feature must be replaced by something else 
 
 static struct virtio_driver virtio_ipc_driver = {
 	.feature_table	= features,
@@ -1069,7 +1092,10 @@ static void __exit rpmsg_fini(void)
 }
 module_exit(rpmsg_fini);
 
-
+MODULE_DEVICE_TABLE(virtio, id_table);
+/**************************************************************************/
+//*modify*///**/ end of VirtIO ZONE 
+/**************************************************************************/
 MODULE_AUTHOR("Maxime Mere <maxime.mere@st.com>");
 MODULE_DESCRIPTION("Virtio-based remote processor messaging bus");
 MODULE_LICENSE("GPL v2");
