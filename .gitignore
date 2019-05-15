@@ -1,0 +1,9 @@
+spelling.txt
+checkpatch.pl
+*.ko
+*.mod.c
+*.symvers
+*.order
+*.cmd
+*.mod
+*.o
