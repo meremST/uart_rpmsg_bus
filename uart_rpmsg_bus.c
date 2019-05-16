@@ -31,18 +31,43 @@
 
 #include "rpmsg_internal.h"
 
-struct buffer_manager_ops {
-	int (*append_raw_dat)(struct buffer_manager *bm,void *dat,int len);
-	int (*ns_op)(struct rpmsg_channel_info chinfo);
-};
 
+/**
+ * struct buffer_manager_ops - indirection table for buffer_manager operations
+ * @append_raw_dat:	used to fill properly buffers, required
+ * @ns_op:		used in case of reception of NS announce from rproc, required
+ *
+ * Indirection table for the operations that a rpmsg bus backend should implement.
+ */
+struct buffer_manager_ops {
+	int (*append_raw_dat)(struct buffer_manager *bm,void *dat,size_t len);
+	int (*ns_op)(struct buffer_manager *bm);
+};
+/*in the future: append raw dat don't have to be here and the function 
+  rpmsg_recv_done must be linked inside this struct*/
+
+/**
+ * buffer_manager- buffer manager instance structure
+ * @rx_raw_tail:	pointer to the last receive raw byte
+ * @rx_raw_left:	byte left inside the raw buffer
+ * @rx_raw_buffer:	raw buffer data
+ * @num_bufs:		total number of buffers for rx
+ * @buf_size:   	size of one rx buffer
+ * @rbufs:		address of rx buffers
+ * @ops:		ops structure that contains buffer manager functions
+ *
+ * This structure aim to manage data before receiving or sending it. The idea is
+ * a whole new service wich then is going to be used as adapter to permit
+ * multiples rpmsg busses types.
+ */
 struct buffer_manager {
-	unsigned char *rx_raw_head;			/* pointer to next byte */
-	int rx_raw_left;				/* bytes left in queue  */
+	unsigned char *rx_raw_tail;		/* pointer to next byte */
+	int rx_raw_left;			/* bytes left in queue  */
 	unsigned char *rx_raw_buffer;
 	unsigned int num_bufs;
 	unsigned int buf_size;
-	void *rbufs;
+	void *rbufs;			/* Big question about this bufs */
+
 	const struct buffer_manager_ops *ops;
 };
 
@@ -119,6 +144,7 @@ struct serdev_rproc_hdr {
 	u8 msg_type;
 } __packed;
 
+/*The magic number used to identifie the uart message as a rpmsg com*/
 #define	SERDEV_RPMSG_MAGIC_NUMBER	(0xbe57)
 
 /**
@@ -503,6 +529,12 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	int s_hdr_size = sizeof(struct serdev_rproc_hdr);
 	int ret;
 
+	/**
+	 * WARNING: there is the RPMSG_NS_ADDR special case because this adrres
+	 * is related to linux the data musn't go in the UART flow !
+	 */
+	/*TODO*/
+
 	/* bcasting isn't allowed */
 	if (src == RPMSG_ADDR_ANY || dst == RPMSG_ADDR_ANY) {
 		dev_err(dev, "invalid addr (src 0x%x, dst 0x%x)\n", src, dst);
@@ -634,17 +666,107 @@ static int uart_get_buffer_size(struct rpmsg_endpoint *ept)
 /****************************/
 
 //rpmsg_recv_done
+/*send data to the appropriate device*/
+static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
+			     struct rpmsg_hdr *msg, unsigned int len)
+{
+	struct rpmsg_endpoint *ept;
+	int err;
+
+	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
+		msg->src, msg->dst, msg->len, msg->flags, msg->reserved);
+#if defined(CONFIG_DYNAMIC_DEBUG)
+	dynamic_hex_dump("rpmsg_virtio RX: ", DUMP_PREFIX_NONE, 16, 1,
+			 msg, sizeof(*msg) + msg->len, true);
+#endif
+
+	/*
+	 * We currently use fixed-sized buffers, so trivially sanitize
+	 * the reported payload length.
+	 */
+	if (len > vrp->buf_size ||
+	    msg->len > (len - sizeof(struct rpmsg_hdr))) {
+		dev_warn(dev, "inbound msg too big: (%d, %d)\n", len, msg->len);
+		return -EINVAL;
+	}
+
+	/* use the dst addr to fetch the callback of the appropriate user */
+	mutex_lock(&srp->endpoints_lock);
+
+	ept = idr_find(&srp->endpoints, msg->dst);
+
+	/* let's make sure no one deallocates ept while we use it */
+	if (ept)
+		kref_get(&ept->refcount);
+
+	mutex_unlock(&vrp->endpoints_lock);
+
+	if (ept) {
+		/* make sure ept->cb doesn't go away while we use it */
+		mutex_lock(&ept->cb_lock);
+
+		if (ept->cb)
+			ept->cb(ept->rpdev, msg->data, msg->len, ept->priv,
+				msg->src);
+
+		mutex_unlock(&ept->cb_lock);
+
+		/* farewell, ept, we don't need you anymore */
+		kref_put(&ept->refcount, __ept_release);
+	} else
+		dev_warn(dev, "msg received with no recipient\n");
+
+	/*Buffer gesture Here*/
+
+	return 0;
+}
+
+/*Called when a buffer is ready to be read. index correspond to the buffer in 
+  the buffer_manager buffer pool*/
+static void rpmsg_recv_done(struct serdev_info *srp, int index)
+{
+	struct buffer_manager *bm = srp->bm;
+	struct device *dev = srp->serdev->dev;
+	struct rpmsg_hdr *msg;
+	int err;
+
+	/*To be continue*/
+
+}
 
 //rpmsg_xmit_done
+
+/*buffer manager functions*/
+static int uart_rpmsg_append_data(struct buffer_manager *bm,void *dat,size_t len)
+{
+	/*to complete*/
+	return -ENOSYS;
+}
+
+static int uart_rpmsg_ns_op(struct buffer_manager *bm)
+{
+	/*to complete*/
+	return -ENOSYS;
+}
+
+static struct buffer_manager_ops uart_rpmsg_buf_manager_ops =  {
+	.append_raw_dat = uart_rpmsg_append_data,
+	.ns_op = uart_rpmsg_ns_op,
+};
 
 /*serdev receive callback called when somme raw data are received*/
 static int uart_rpmsg_receive(struct serdev_device *serdev,
 			      const unsigned char *data, size_t count)
 {
-	return -ENOSYS; // must return the count of data received or an error
+	struct serdev_info *srp = serdev_device_get_drvdata(serdev);
+	struct buffer_manager *bm = srp->bm;
+	int ret;
+
+	// must return the count of data received or an error
+	return uart_rpmsg_append_data(bm,data,count);
 }
 
-static struct serdev_device_ops st_serdev_ops = {
+static struct serdev_device_ops rpmsg_serdev_ops = {
 	.receive_buf = uart_rpmsg_receive,
 	.write_wakeup = serdev_device_write_wakeup,
 };
@@ -739,24 +861,40 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 
 	/*
 	 * Instanciation of buf_manager, a new entity in charge of the data 
-	 * gesture.
+	 * gesture. create a specific in function for that:
 	 */
 	bm = kzalloc(sizeof(*bm),GFP_KERNEL);
-	if (!bm)
-		return -ENOMEM;
+	if (!bm){
+		err = -ENOMEM;
+		goto free_bm;
+	}
 
 	/*put this in a buffer_manager 'init' function*/
 	bm->buf_size = MAX_RPMSG_BUF_SIZE;
 	bm->num_bufs = MAX_RPMSG_NUM_BUFS;
 
-	/*call buffer_manager 'init' function here */
+	bm->ops = &uart_rpmsg_buf_manager_ops;
+
+	/*Memory alloc rx_raw_left and rbufs*/
+	bm->rx_raw_buffer = kzalloc(MAX_RPMSG_BUF_SIZE,GFP_KERNEL);
+	if (!(bm->rx_raw_buffer)){
+		err = -ENOMEM;
+		goto free_rawbuf;
+	}
+
+	bm->rbufs = kzalloc(MAX_RPMSG_BUF_SIZE*MAX_RPMSG_NUM_BUFS,GFP_KERNEL);
+	if (!(bm->rbufs)){
+		err = -ENOMEM;
+		goto free_rbufs;
+	}
+	/*buffer_manager 'init' function up here */
 
 	srp->bm = bm;
 	
 	idr_init(&srp->endpoints);
 	mutex_init(&srp->endpoints_lock);
 
-	serdev_device_set_client_ops(serdev, &st_serdev_ops);
+	serdev_device_set_client_ops(serdev, &rpmsg_serdev_ops);
 	err = serdev_device_open(serdev);
 	if (err) {
 		dev_err(&serdev->dev, "Unable to open device\n");
@@ -784,8 +922,15 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 
 	dev_info(&serdev->dev, "rpmsg host is online\n");
 
+	/*succes*/
 	return 0;
 
+free_rbufs:
+	kfree(bm->rbufs);
+free_rawbuf:
+	kfree(bm->rx_raw_buffer);
+free_bm:
+	kfree(bm);
 free_srp:
 	kfree(srp);
 of_err:
@@ -802,6 +947,7 @@ static int rpmsg_remove_device(struct device *dev, void *data)
 static void uart_rpmsg_remove(struct serdev_device *serdev)
 {
 	struct serdev_info *srp = serdev_device_get_drvdata(serdev);
+	struct buffer_manager *bm = srp->bm;
 	int ret;
 
 	ret = device_for_each_child(&serdev->dev, NULL, rpmsg_remove_device);
@@ -812,8 +958,12 @@ static void uart_rpmsg_remove(struct serdev_device *serdev)
 		__rpmsg_destroy_ept(srp, srp->ns_ept);
 
 	/*free memory of buffer manager*/
-	kfree(srp->bm);
-	/*should create a buffer manager deinit function here*/
+	/*Should create a buffer manager deinit function here*/
+	bm->ops = NULL;
+	kfree(bm->rx_raw_buffer);
+	kfree(bm->rbufs);
+	kfree(bm);
+	/*buffer manager deinit function*/
 
 	idr_destroy(&srp->endpoints);
 
