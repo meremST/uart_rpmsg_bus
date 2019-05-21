@@ -60,26 +60,13 @@ struct buffer_manager {
 /**
  * struct serdev_info - virtual remote processor state
  * @serdev:	the serdev device
- * @rvq:	rx virtqueue
- * @svq:	tx virtqueue
- * @rbufs:	kernel address of rx buffers
- * @sbufs:	kernel address of tx buffers
- * @num_bufs:	total number of buffers for rx and tx
- * @buf_size:   size of one rx or tx buffer
- * @last_sbuf:	index of last tx buffer used
- * @bufs_dma:	dma base addr of the buffers
- * @tx_lock:	protects svq, sbufs and sleepers, to allow concurrent senders.
- *		sending a message might require waking up a dozing remote
- *		processor, which involves sleeping, hence the mutex.
+ * @bm:		buffer_manager instance
  * @endpoints:	idr of local endpoints, allows fast retrieval
  * @endpoints_lock: lock of the endpoints set
- * @sendq:	wait queue of sending contexts waiting for a tx buffers
- * @sleepers:	number of senders that are waiting for a tx buffer
  * @ns_ept:	the bus's name service endpoint
  *
- * This structure stores the rpmsg state of a given virtio remote processor
- * device (there might be several virtio proc devices for each physical
- * remote processor).
+ * This structure stores the rpmsg state of a given serial device (there might 
+ * be several rpmsg_bus for each physical remote processor).
  */
 struct serdev_info { //*modify*///*can change*/
 	struct serdev_device *serdev;
@@ -121,9 +108,9 @@ struct rpmsg_hdr {
  * Every message sent(/received) with serial communication use this header
  */
 struct serdev_rproc_hdr {
+	u16 magic_number; //0xbe57 #beST
 	u16 len;
 	u8 msg_type;
-	u16 magic_number; //0xbe57 #beST
 } __packed;
 
 /*The magic number used to identifie the uart message as a rpmsg com*/
@@ -131,6 +118,8 @@ struct serdev_rproc_hdr {
 
 /**
  * enum serdev_rproc_type - types of messages that can be sent through uart
+ *
+ * the uart annoucement sytem is using ns_msg 
  *
  * @SERDEV_RPROC_RPMSG: standard rpmsg
  * @SERDEV_RPROC_ANNOUNCE: serdev annoncement messages
@@ -181,22 +170,11 @@ struct serdev_rpmsg_channel {
 	container_of(_rpdev, struct serdev_rpmsg_channel, rpdev)
 
 /*
- * We're allocating buffers of 512 bytes each for communications. The
- * number of buffers will be computed from the number of buffers supported
- * by the vring, upto a maximum of 512 buffers (256 in each direction).
+ * We're allocating buffers of 512 bytes each for communications.
  *
  * Each buffer will have 16 bytes for the msg header and 496 bytes for
  * the payload.
  *
- * This will utilize a maximum total space of 256KB for the buffers.
- *
- * We might also want to add support for user-provided buffers in time.
- * This will allow bigger buffer size flexibility, and can also be used
- * to achieve zero-copy messaging.
- *
- * Note that these numbers are purely a decision of this driver - we
- * can change this without changing anything in the firmware of the remote
- * processor.
  */
 #define MAX_RPMSG_BUF_SIZE	(512)
 
@@ -267,6 +245,8 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct serdev_info *srp,
 	ept = kzalloc(sizeof(*ept), GFP_KERNEL);
 	if (!ept)
 		return NULL;
+
+	printk(KERN_INFO "--ept creation--\n");
 
 	kref_init(&ept->refcount);
 	mutex_init(&ept->cb_lock);
@@ -348,12 +328,14 @@ static void uart_rpmsg_destroy_ept(struct rpmsg_endpoint *ept)
 	__rpmsg_destroy_ept(sch->srp, ept);
 }
 
+/*announcement are made when a new rpmsg driver is probbed or removed*/
 static int uart_rpmsg_announce_create(struct rpmsg_device *rpdev)
 {
 	//struct serdev_rpmsg_channel *sch = to_serdev_rpmsg_channel(rpdev);
 	//struct serdev_info *srp = sch->srp;
 	struct device *dev = &rpdev->dev;
 	int err = 0;
+	printk(KERN_INFO "--announce create--\n");
 
 	/* need to tell remote processor's name service about this channel ? */
 	//*modify*///*uart version*/ --> virtio_has_feature...
@@ -514,8 +496,10 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	/**
 	 * WARNING!!: there is the RPMSG_NS_ADDR special case because this adrres
 	 * is related to linux the data musn't go in the UART flow !
+	 * (mais je me trompe peut être, esce que l'on est censé pouvoir faire ça ?)
 	 */
 	/*TODO*/
+	printk(KERN_INFO "--send offchannel--\n");
 
 	/* bcasting isn't allowed */
 	if (src == RPMSG_ADDR_ANY || dst == RPMSG_ADDR_ANY) {
@@ -538,9 +522,9 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	}
 
 	/*
-	 * With uart there is no shared memory so there is not need of buffer
-	 * we allocating memory to a pointer wich will be used by a serdev
-	 * instead. Moreover 'wait' is useless here
+	 * With uart there is no shared memory so there is no need of buffers
+	 * we're allocating memory to a pointer wich will be used by a serdev
+	 * instead. Moreover we don't need to wait for a buffer.
 	 */
 	msg = kmalloc(msg_size,GFP_KERNEL);
 	if(!msg)
@@ -567,17 +551,21 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	 * The serdev_rproc_hdr is sent first to indicate what kind and how 
 	 * much data the remote proc is going to receive.
 	 */
+	printk(KERN_INFO "sending hdr...");
 	ret = serdev_device_write(serdev, (uint8_t *)&s_hdr, s_hdr_size, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
 		goto err_send;
 	}
-
+	printk(KERN_INFO "done.\n");
+	/*Then the RPMS itself is sent*/
+	printk(KERN_INFO "sending rpmsg...");
 	ret = serdev_device_write(serdev, (uint8_t *)msg, msg_size, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
 		goto err_send;
 	}
+	printk(KERN_INFO "done.\n");
 
 err_send:
 	kfree(msg);
@@ -704,8 +692,17 @@ static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 	return 0;
 }
 
-static int uart_rpmsg_ns_op(struct serdev_info *srp)
+static int uart_rpmsg_ns_op(struct serdev_info *srp, struct device *dev,
+			    struct rpmsg_ns_msg *nmsg)
 {
+	/* ns message can be of two type: channel creation or suppression. To
+	 * communicate this kind of info the nd_mdg are used. The flag part is
+	 * used to identify a reation or a deletion. 
+	 *
+	 * this part seems to be useless because classic rpmsg already implement
+	 * a NS process
+	 */
+
 	/*to complete!*/
 	return -ENOSYS;
 }
@@ -729,7 +726,7 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	}
 	else if(bm->msg_type == SERDEV_RPROC_ANNOUNCE){
 		nmsg = (struct rpmsg_ns_msg*)bm->rbuf;
-		err = uart_rpmsg_ns_op(srp);
+		err = uart_rpmsg_ns_op(srp, &dev, nmsg);
 		if(err)
 			dev_err(&dev,"ns_op: somthing went wrong (%d)",err);
 	}
@@ -749,10 +746,14 @@ uart_rpmsg_append_data(struct serdev_info *srp,unsigned char *dat,size_t len)
 	struct device dev = srp->serdev->dev;
 	int *byte_left = &bm->rx_raw_left;
 	int ret;
+	int byte_stored = 0;
 
+	printk(KERN_INFO "receive(%d)\n", len);
+	printk(KERN_INFO "Bleft(%d)\n", *byte_left);
 	if (*byte_left >= 0) {
 		if (*byte_left <= len) {
-			/*last message*/
+			printk(KERN_INFO "LAST BYTE\n");
+			/*last bytes*/
 			memcpy(bm->rx_raw_tail, dat, *byte_left);			
 			ret = *byte_left; //should be eq to len 
 
@@ -773,10 +774,12 @@ uart_rpmsg_append_data(struct serdev_info *srp,unsigned char *dat,size_t len)
 			bm->rx_raw_tail = bm->rx_raw_buffer;
 
 		} else {
+			/*usual case of data reception*/
 			memcpy(bm->rx_raw_tail, dat, len);
 			*byte_left -= len;
 			bm->rx_raw_tail += len;
 			ret = len;
+			printk(KERN_INFO "newBleft(%d)\n", *byte_left);
 		}
 	} else {
 		/*something went wrong*/
@@ -784,14 +787,17 @@ uart_rpmsg_append_data(struct serdev_info *srp,unsigned char *dat,size_t len)
 		ret = -ENOMEM;
 	}
 
-	if(!bm->flag_recv && *byte_left >= sizeof(struct serdev_rproc_hdr)){
+	byte_stored = bm->buf_size - *byte_left;
+	printk(KERN_INFO "bstored(%d)\n", byte_stored);
+	if(!bm->flag_recv && (byte_stored >= sizeof(struct serdev_rproc_hdr))){
 		/*Check in the header to know how many data we're waiting for*/
 		memcpy(&s_hdr,bm->rx_raw_buffer,sizeof(struct serdev_rproc_hdr));
+		printk(KERN_INFO "--0x%x(mn),0x%x(len),0x%x(typ)--\n", s_hdr.magic_number,s_hdr.len,s_hdr.msg_type);
 		if(s_hdr.magic_number == SERDEV_RPMSG_MAGIC_NUMBER){
-			*byte_left = s_hdr.len;
+			*byte_left = s_hdr.len - (byte_stored-sizeof(struct serdev_rproc_hdr));
 			bm->msg_len = s_hdr.len;
 			bm->msg_type = s_hdr.msg_type;
-			bm->msg_start = bm->rx_raw_tail;
+			bm->msg_start = bm->rx_raw_tail - (byte_stored-sizeof(struct serdev_rproc_hdr));
 			bm->flag_recv = true;
 		}
 		else {
@@ -825,7 +831,7 @@ static struct serdev_device_ops rpmsg_serdev_ops = {
 
 static const struct of_device_id rpmsg_uart_of_match[] = {
 	{
-	 .compatible = "st,stm32f4-uart", //tochange
+	 .compatible = "st,stm32f4-uart", //change it later
 	},
 	{}
 };
@@ -904,6 +910,8 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 		dev_err(&serdev->dev, "Bad device description\n");
 		goto of_err;
 	}
+	if(speed > max_speed)
+		speed = max_speed;
 
 	srp = kzalloc(sizeof(*srp), GFP_KERNEL);
 	if (!srp)
