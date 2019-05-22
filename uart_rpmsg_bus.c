@@ -51,7 +51,6 @@ struct buffer_manager {
 	bool first_byte_rx;
 	unsigned int buf_size;
 
-	unsigned char *msg_start;
 	unsigned char msg_type;
 	int msg_len;
 
@@ -708,7 +707,7 @@ static int uart_rpmsg_ns_op(struct serdev_info *srp, struct device *dev,
 	return -ENOSYS;
 }
 
-/*Called when a buffer is ready to be read.*/
+/*Called when rx buffer is ready to be read.*/
 static void rpmsg_recv_done(struct serdev_info *srp)
 {
 	struct buffer_manager *bm = srp->bm;
@@ -752,85 +751,80 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	size_t old_len = len;
 
 	/*byte_left can't be negative*/
-	if (*byte_left >= 0) {
-		if (*byte_left > len) {
-			if (!bm->first_byte_rx) {
-				/*searching for the first transmit byte*/
-				for (i = 0; i < old_len; i++) {
-					if (*((uint16_t *)dat) == 0xbe57) {
-					/*when it's done, we start append process*/
-						bm->first_byte_rx = true;
-						break;
-					} else {
-					/*in case non valid data we trash it*/
-						len--;
-						dat++;
-					}
-				}
-			}
-
-			if (bm->first_byte_rx) {
-				/*usual case of data reception*/
-				memcpy(bm->rx_raw_tail, dat, len);
-				*byte_left -= len;
-				bm->rx_raw_tail += len;
-			}
-
-			ret = old_len;
-
-		} else {
-			/*we copy the last bytes*/
-			memcpy(bm->rx_raw_tail, dat, *byte_left);
-
-			/*the message is complete, we can copy it in rbuf*/
-			// IDEA: buf = get_rx_buf(bm);
-			memcpy(bm->rbuf, bm->msg_start, bm->msg_len);
-
-			/*notify rpmsg_recv_done*/
-			/* for the moment the function is directly called but
-			 * it's possible to add it in a workqueue and add a
-			 * mutex for the rbuf acces.
-			 */
-			rpmsg_recv_done(srp);
-
-			/*clean buffer manager*/
-			bm->flag_msg_recv = false;
-			bm->first_byte_rx = false;
-			*byte_left = bm->buf_size;
-			/*clear header to be sure to detect the next msg*/
-			memset(bm->rx_raw_buffer, 0, sizeof(struct serdev_rproc_hdr));
-
-			/*put the tail to the begining of the buffer*/
-			bm->rx_raw_tail = bm->rx_raw_buffer;
-
-			ret = *byte_left; //should be eq to len
-		}
-
-	} else {
+	if (*byte_left < 0) {
 		/*something went wrong*/
 		dev_err(&dev, "something went wrong with 'append_data'");
 		return -ERANGE;
 	}
 
+	if (*byte_left > len) {
+		if (!bm->first_byte_rx) {
+			/*searching for the first transmit byte*/
+			for (i = 0; i < old_len; i++) {
+				if (*((uint16_t *)dat) == 0xbe57) {
+				/*when done, we start append process*/
+					bm->first_byte_rx = true;
+					break;
+				} else {
+				/*in case non valid data we trash it*/
+					len--;
+					dat++;
+				}
+			}
+		}
+
+		if (bm->first_byte_rx) {
+			/*usual case of data reception*/
+			memcpy(bm->rx_raw_tail, dat, len);
+			*byte_left -= len;
+			bm->rx_raw_tail += len;
+		}
+
+		ret = old_len;
+
+	} else {
+		/*the message is fully received*/
+		unsigned char *msg_start = bm->rx_raw_buffer + sizeof(s_hdr);
+		/*we copy the last bytes*/
+		memcpy(bm->rx_raw_tail, dat, *byte_left);
+
+		/*the message is complete, we can copy it in rbuf*/
+		// IDEA: buf = get_rx_buf(bm);
+		memcpy(bm->rbuf, msg_start, bm->msg_len);
+
+		/*notify rpmsg_recv_done*/
+		/* for the moment the function is directly called but
+		 * it's possible to add it in a workqueue and add a
+		 * mutex for the rbuf acces.
+		 */
+		rpmsg_recv_done(srp);
+
+		/*clean buffer manager*/
+		ret = *byte_left; //should be eq to len
+
+		bm->flag_msg_recv = false;
+		bm->first_byte_rx = false;
+		*byte_left = bm->buf_size;
+		/*clear header to be sure to detect the next msg*/
+		memset(bm->rx_raw_buffer, 0, sizeof(s_hdr));
+
+		/*put the tail to the begining of the buffer*/
+		bm->rx_raw_tail = bm->rx_raw_buffer;
+	}
+
 	/*This section use the data header to prepare the rpmsg msg reception*/
 	byte_stored = bm->buf_size - *byte_left;
-	if (!bm->flag_msg_recv && (byte_stored >= sizeof(struct serdev_rproc_hdr))) {
+	if (!bm->flag_msg_recv && (byte_stored >= sizeof(s_hdr))) {
 		/*Check in the header to know how many data we're waiting for*/
-		memcpy(&s_hdr, bm->rx_raw_buffer, sizeof(struct serdev_rproc_hdr));
-		if (s_hdr.magic_number == SERDEV_RPMSG_MAGIC_NUMBER) {
-			*byte_left = s_hdr.len - (byte_stored - sizeof(struct serdev_rproc_hdr));
-			bm->msg_len = s_hdr.len;
-			bm->msg_type = s_hdr.msg_type;
-			//TEST EN COURS ICI
-			bm->msg_start = bm->rx_raw_buffer + sizeof(struct serdev_rproc_hdr);//bm->rx_raw_tail - (byte_stored-sizeof(struct serdev_rproc_hdr));
-			bm->flag_msg_recv = true;
-		} else {
-			/*Means that we don't receive the magic number*/
-			dev_warn(&dev, "bad message format");
-			*byte_left = bm->buf_size;
-			memset(bm->rx_raw_buffer, 0, sizeof(struct serdev_rproc_hdr));
-			bm->rx_raw_tail = bm->rx_raw_buffer;
-		}
+		memcpy(&s_hdr, bm->rx_raw_buffer, sizeof(s_hdr));
+		
+		/* byte_left will be now equal to the size of the rpmsgmsg minus
+		 * the byte already received
+		 */
+		*byte_left = s_hdr.len - (byte_stored - sizeof(s_hdr));
+		bm->msg_len = s_hdr.len;
+		bm->msg_type = s_hdr.msg_type;
+		bm->flag_msg_recv = true;
 	}
 
 	return ret;
@@ -919,6 +913,10 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
 
 static int uart_rpmsg_probe(struct serdev_device *serdev)
 {
+	/* 
+	 * A faster speed causes problems:
+	 * some unexpected 0 appear in the data randomly.
+	 */
 	u32 speed = 38400;//115200;
 	u32 max_speed;
 	struct serdev_info *srp;
