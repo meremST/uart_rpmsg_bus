@@ -47,7 +47,8 @@ struct buffer_manager {
 	unsigned char *rx_raw_tail;		/* pointer to next byte */
 	int rx_raw_left;			/* bytes left in queue  */
 	unsigned char *rx_raw_buffer;
-	bool flag_recv;
+	bool flag_msg_recv;
+	bool first_byte_rx;
 	unsigned int buf_size;
 
 	unsigned char *msg_start;
@@ -246,8 +247,6 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct serdev_info *srp,
 	if (!ept)
 		return NULL;
 
-	printk(KERN_INFO "--ept creation--\n");
-
 	kref_init(&ept->refcount);
 	mutex_init(&ept->cb_lock);
 
@@ -341,6 +340,7 @@ static int uart_rpmsg_announce_create(struct rpmsg_device *rpdev)
 	//*modify*///*uart version*/ --> virtio_has_feature...
 	if (rpdev->announce && rpdev->ept && RPMSG_F_NS_SUPPORT) {
 		struct rpmsg_ns_msg nsm;
+		printk(KERN_INFO "--announce create sending--\n");
 
 		strncpy(nsm.name, rpdev->id.name, RPMSG_NAME_SIZE);
 		nsm.addr = rpdev->ept->addr;
@@ -636,7 +636,6 @@ static int uart_get_buffer_size(struct rpmsg_endpoint *ept)
 /*BRAND NEW RECEPTION SYSTEM*/
 /****************************/
 
-//rpmsg_recv_done
 /*send data to the appropriate device*/
 static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 			     struct rpmsg_hdr *msg, unsigned int len)
@@ -720,6 +719,7 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	/*there's more than one type so I need to complete this func*/
 	if(bm->msg_type == SERDEV_RPROC_RPMSG){
 		msg = (struct rpmsg_hdr*)bm->rbuf;
+		//printk(KERN_INFO "--0x%x(src),0x%x(dst),0x%x(len)--\n", msg->src,msg->dst,msg->len);
 		err = rpmsg_recv_single(srp, &dev, msg, bm->msg_len);
 		if(err)
 			dev_err(&dev,"recv: somthing went wrong (%d)",err);
@@ -745,14 +745,13 @@ uart_rpmsg_append_data(struct serdev_info *srp,unsigned char *dat,size_t len)
 	struct serdev_rproc_hdr s_hdr;
 	struct device dev = srp->serdev->dev;
 	int *byte_left = &bm->rx_raw_left;
-	int ret;
+	int ret,i;
 	int byte_stored = 0;
+	size_t old_len = len;
 
-	printk(KERN_INFO "receive(%d)\n", len);
-	printk(KERN_INFO "Bleft(%d)\n", *byte_left);
+	/*Byte can't be negative*/
 	if (*byte_left >= 0) {
 		if (*byte_left <= len) {
-			printk(KERN_INFO "LAST BYTE\n");
 			/*last bytes*/
 			memcpy(bm->rx_raw_tail, dat, *byte_left);			
 			ret = *byte_left; //should be eq to len 
@@ -765,7 +764,8 @@ uart_rpmsg_append_data(struct serdev_info *srp,unsigned char *dat,size_t len)
 			rpmsg_recv_done(srp);
 
 			/*clean buffer manager*/
-			bm->flag_recv = false;
+			bm->flag_msg_recv = false;
+			bm->first_byte_rx = false;
 			*byte_left = bm->buf_size;
 			/*clear header to be sure to detect the next msg*/
 			memset(bm->rx_raw_buffer,0,sizeof(struct serdev_rproc_hdr));
@@ -774,31 +774,51 @@ uart_rpmsg_append_data(struct serdev_info *srp,unsigned char *dat,size_t len)
 			bm->rx_raw_tail = bm->rx_raw_buffer;
 
 		} else {
-			/*usual case of data reception*/
-			memcpy(bm->rx_raw_tail, dat, len);
-			*byte_left -= len;
-			bm->rx_raw_tail += len;
-			ret = len;
-			printk(KERN_INFO "newBleft(%d)\n", *byte_left);
+			if(!bm->first_byte_rx){
+				/*searching for the first transmit byte*/
+				for(i=0;i<old_len;i++){
+					if(*((uint16_t*)dat) == 0xbe57){
+						/*when it's done we read normaly*/
+						bm->first_byte_rx = true;
+						break;	
+					}
+					else {
+						/*in case non valid data we trash it*/
+						len--;
+						dat++;
+					}
+				}
+				
+
+			}
+
+			if(bm->first_byte_rx){
+				/*usual case of data reception*/
+				memcpy(bm->rx_raw_tail, dat, len);
+				*byte_left -= len;
+				bm->rx_raw_tail += len;
+			}
+
+			ret = old_len;
+			
 		}
 	} else {
 		/*something went wrong*/
-		printk(KERN_INFO "something went wrong with append_data\n");
-		ret = -ENOMEM;
+		dev_err(&dev,"something went wrong with 'append_data'");
+		return -ERANGE;
 	}
 
 	byte_stored = bm->buf_size - *byte_left;
-	printk(KERN_INFO "bstored(%d)\n", byte_stored);
-	if(!bm->flag_recv && (byte_stored >= sizeof(struct serdev_rproc_hdr))){
+	if(!bm->flag_msg_recv && (byte_stored >= sizeof(struct serdev_rproc_hdr))){
 		/*Check in the header to know how many data we're waiting for*/
 		memcpy(&s_hdr,bm->rx_raw_buffer,sizeof(struct serdev_rproc_hdr));
-		printk(KERN_INFO "--0x%x(mn),0x%x(len),0x%x(typ)--\n", s_hdr.magic_number,s_hdr.len,s_hdr.msg_type);
 		if(s_hdr.magic_number == SERDEV_RPMSG_MAGIC_NUMBER){
 			*byte_left = s_hdr.len - (byte_stored-sizeof(struct serdev_rproc_hdr));
 			bm->msg_len = s_hdr.len;
 			bm->msg_type = s_hdr.msg_type;
-			bm->msg_start = bm->rx_raw_tail - (byte_stored-sizeof(struct serdev_rproc_hdr));
-			bm->flag_recv = true;
+			//TEST EN COURS ICI
+			bm->msg_start = bm->rx_raw_buffer + sizeof(struct serdev_rproc_hdr);//bm->rx_raw_tail - (byte_stored-sizeof(struct serdev_rproc_hdr));
+			bm->flag_msg_recv = true;
 		}
 		else {
 			/*Means that we don't receive the magic number*/
@@ -897,7 +917,7 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
 
 static int uart_rpmsg_probe(struct serdev_device *serdev)
 {
-	u32 speed = 115200;
+	u32 speed = 38400;//115200;
 	u32 max_speed;
 	struct serdev_info *srp;
 	struct device_node *np = serdev->dev.of_node;
@@ -932,6 +952,8 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 
 	/*put this in a buffer_manager 'init' function*/
 	bm->buf_size = MAX_RPMSG_BUF_SIZE;
+	bm->flag_msg_recv = false;
+	bm->first_byte_rx = false;
 
 	/*Memory alloc rx_raw_left and rbuf*/
 	bm->rx_raw_buffer = kzalloc(raw_b_size, GFP_KERNEL);
