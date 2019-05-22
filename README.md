@@ -14,7 +14,7 @@ Linux_target:~# insmod uart_rpmsg_bus.ko
 ```
 ## How to probe a device
 to be probbed the device must be declared in the device tree:
-
+the example bellow show how it can be declared for a STM32MP1-dk2 board. This declaration will enable the serial device present on the Arduino pins.
 ```
 /* Uart test */
 &uart7 {
