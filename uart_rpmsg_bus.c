@@ -32,7 +32,7 @@
 #include "rpmsg_internal.h"
 
 /**
- * buffer_manager- buffer manager instance structure
+ * buffer_manager - buffer manager instance structure
  * @rx_raw_tail:	pointer to the last receive raw byte
  * @rx_raw_left:	byte left inside the raw buffer
  * @rx_raw_buffer:	raw buffer data
@@ -68,7 +68,7 @@ struct buffer_manager {
  * This structure stores the rpmsg state of a given serial device (there might
  * be several rpmsg_bus for each physical remote processor).
  */
-struct serdev_info { //*modify*///*can change*/
+struct serdev_info {
 	struct serdev_device *serdev;
 	struct buffer_manager *bm;
 	struct idr endpoints;
@@ -333,15 +333,10 @@ static int uart_rpmsg_announce_create(struct rpmsg_device *rpdev)
 	//struct serdev_info *srp = sch->srp;
 	struct device *dev = &rpdev->dev;
 	int err = 0;
-	printk(KERN_INFO "--announce create--(%s)\n", rpdev->ept ? "true" : "false");
-	printk(KERN_INFO "--rpdev->announce--(%s)\n", rpdev->announce ? "true" : "false");
-	printk(KERN_INFO "--support--(%s)\n", RPMSG_F_NS_SUPPORT ? "true" : "false");
 
 	/* need to tell remote processor's name service about this channel ? */
-	//*modify*///*uart version*/ --> virtio_has_feature...
 	if (rpdev->announce && rpdev->ept && RPMSG_F_NS_SUPPORT) {
 		struct rpmsg_ns_msg nsm;
-		printk(KERN_INFO "--announce create sending--\n");
 
 		strncpy(nsm.name, rpdev->id.name, RPMSG_NAME_SIZE);
 		nsm.addr = rpdev->ept->addr;
@@ -363,7 +358,6 @@ static int uart_rpmsg_announce_destroy(struct rpmsg_device *rpdev)
 	int err = 0;
 
 	/* tell remote processor's name service we're removing this channel */
-	//*modify*///*uart version*/ --> virtio_has_feature...
 	if (rpdev->announce && rpdev->ept && RPMSG_F_NS_SUPPORT) {
 		struct rpmsg_ns_msg nsm;
 
@@ -494,14 +488,6 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	int s_hdr_size = sizeof(struct serdev_rproc_hdr);
 	int ret;
 
-	/**
-	 * WARNING!!: there is the RPMSG_NS_ADDR special case because this adrres
-	 * is related to linux the data musn't go in the UART flow !
-	 * (mais je me trompe peut être, esce que l'on est censé pouvoir faire ça ?)
-	 */
-	/*TODO*/
-	printk(KERN_INFO "--send offchannel--\n");
-
 	/* bcasting isn't allowed */
 	if (src == RPMSG_ADDR_ANY || dst == RPMSG_ADDR_ANY) {
 		dev_err(dev, "invalid addr (src 0x%x, dst 0x%x)\n", src, dst);
@@ -552,21 +538,18 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	 * The serdev_rproc_hdr is sent first to indicate what kind and how
 	 * much data the remote proc is going to receive.
 	 */
-	printk(KERN_INFO "sending hdr...");
 	ret = serdev_device_write(serdev, (uint8_t *)&s_hdr, s_hdr_size, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
 		goto err_send;
 	}
-	printk(KERN_INFO "done.\n");
+
 	/*Then the RPMS itself is sent*/
-	printk(KERN_INFO "sending rpmsg...");
 	ret = serdev_device_write(serdev, (uint8_t *)msg, msg_size, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
 		goto err_send;
 	}
-	printk(KERN_INFO "done.\n");
 
 err_send:
 	kfree(msg);
@@ -720,7 +703,7 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	/*there's more than one type so I need to complete this func*/
 	if (bm->msg_type == SERDEV_RPROC_RPMSG) {
 		msg = (struct rpmsg_hdr *)bm->rbuf;
-		//printk(KERN_INFO "--0x%x(src),0x%x(dst),0x%x(len)--\n", msg->src,msg->dst,msg->len);
+
 		err = rpmsg_recv_single(srp, &dev, msg, bm->msg_len);
 		if (err)
 			dev_err(&dev, "recv: somthing went wrong (%d)", err);
@@ -739,6 +722,9 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 //rpmsg_xmit_done
 
 /*buffer manager functions*/
+/**
+ * uart_rpmsg_append_data - return the count of data received or an error
+ */
 static int
 uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 {
@@ -750,43 +736,60 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	int byte_stored = 0;
 	size_t old_len = len;
 
-	/*byte_left can't be negative*/
-	if (*byte_left < 0) {
-		/*something went wrong*/
-		dev_err(&dev, "something went wrong with 'append_data'");
-		return -ERANGE;
-	}
-
-	if (*byte_left > len) {
-		if (!bm->first_byte_rx) {
-			/*searching for the first transmit byte*/
-			for (i = 0; i < old_len; i++) {
-				if (*((uint16_t *)dat) == 0xbe57) {
-				/*when done, we start append process*/
-					bm->first_byte_rx = true;
-					break;
-				} else {
-				/*in case non valid data we trash it*/
-					len--;
-					dat++;
-				}
+	if (!bm->first_byte_rx) { 
+		/*searching for the first transmit byte*/
+		for (i = 0; i < old_len; i++) {
+			if (*((uint16_t *)dat) == 0xbe57) {
+			/*when done, we start append process*/
+				bm->first_byte_rx = true;
+				memcpy(bm->rx_raw_tail, dat, len);
+				*byte_left -= len;
+				bm->rx_raw_tail += len;
+				break;
+			} else {
+			/*in case non valid data we trash it*/
+				len--;
+				dat++;
 			}
 		}
-
-		if (bm->first_byte_rx) {
-			/*usual case of data reception*/
-			memcpy(bm->rx_raw_tail, dat, len);
-			*byte_left -= len;
-			bm->rx_raw_tail += len;
-		}
-
-		ret = old_len;
-
 	} else {
+		/*usual case of data reception*/
+		memcpy(bm->rx_raw_tail, dat, len);
+		*byte_left -= len;
+		bm->rx_raw_tail += len;
+	}
+
+	/*byte_left can't be negative*/
+	/* Enter in this case means that we received more data that the
+	 * msg is supposed to have. For now the driver is not able to
+	 * receive a second message while the first one isn't over.
+	 */
+	if (*byte_left < 0) {
+		dev_err(&dev, "Too much data received");
+		ret = -ERANGE;
+		goto err_bm;
+	}
+
+	byte_stored = bm->buf_size - *byte_left;
+	if (!bm->flag_msg_recv && (byte_stored >= sizeof(s_hdr))) {
+		/*Check in the header to know how many data we're waiting for*/
+		memcpy(&s_hdr, bm->rx_raw_buffer, sizeof(s_hdr));
+		if(s_hdr.len > MAX_RPMSG_BUF_SIZE){
+			dev_err(&dev, "msg length too high");
+			ret = -ENOMEM;
+			goto err_bm;
+		}
+		/* byte_left will be now equal to the size of the rpmsgmsg minus
+		 * the byte already received
+		 */
+		*byte_left = s_hdr.len - (byte_stored - sizeof(s_hdr));
+		bm->msg_len = s_hdr.len;
+		bm->msg_type = s_hdr.msg_type;
+		bm->flag_msg_recv = true;
+	}
+	else if (*byte_left == 0) {
 		/*the message is fully received*/
 		unsigned char *msg_start = bm->rx_raw_buffer + sizeof(s_hdr);
-		/*we copy the last bytes*/
-		memcpy(bm->rx_raw_tail, dat, *byte_left);
 
 		/*the message is complete, we can copy it in rbuf*/
 		// IDEA: buf = get_rx_buf(bm);
@@ -800,32 +803,21 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		rpmsg_recv_done(srp);
 
 		/*clean buffer manager*/
-		ret = *byte_left; //should be eq to len
-
 		bm->flag_msg_recv = false;
 		bm->first_byte_rx = false;
 		*byte_left = bm->buf_size;
-		/*clear header to be sure to detect the next msg*/
-		memset(bm->rx_raw_buffer, 0, sizeof(s_hdr));
 
 		/*put the tail to the begining of the buffer*/
 		bm->rx_raw_tail = bm->rx_raw_buffer;
 	}
 
-	/*This section use the data header to prepare the rpmsg msg reception*/
-	byte_stored = bm->buf_size - *byte_left;
-	if (!bm->flag_msg_recv && (byte_stored >= sizeof(s_hdr))) {
-		/*Check in the header to know how many data we're waiting for*/
-		memcpy(&s_hdr, bm->rx_raw_buffer, sizeof(s_hdr));
-		
-		/* byte_left will be now equal to the size of the rpmsgmsg minus
-		 * the byte already received
-		 */
-		*byte_left = s_hdr.len - (byte_stored - sizeof(s_hdr));
-		bm->msg_len = s_hdr.len;
-		bm->msg_type = s_hdr.msg_type;
-		bm->flag_msg_recv = true;
-	}
+	return old_len;
+err_bm:
+	/*reset of buffer manager*/
+	bm->flag_msg_recv = false;
+	bm->first_byte_rx = false;
+	*byte_left = bm->buf_size;
+	bm->rx_raw_tail = bm->rx_raw_buffer;
 
 	return ret;
 }
@@ -836,7 +828,6 @@ static int uart_rpmsg_receive(struct serdev_device *serdev,
 {
 	struct serdev_info *srp = serdev_device_get_drvdata(serdev);
 
-	// must return the count of data received or an error
 	return uart_rpmsg_append_data(srp, (uint8_t *)data, count);
 }
 
