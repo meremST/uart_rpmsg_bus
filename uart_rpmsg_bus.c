@@ -122,11 +122,9 @@ struct serdev_rproc_hdr {
  * the uart annoucement sytem is using ns_msg
  *
  * @SERDEV_RPROC_RPMSG: standard rpmsg
- * @SERDEV_RPROC_ANNOUNCE: serdev annoncement messages
  */
 enum serdev_rproc_type {
 	SERDEV_RPROC_RPMSG	= 0,
-	SERDEV_RPROC_ANNOUNCE	= 1,
 };
 
 /**
@@ -675,44 +673,21 @@ static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 	return 0;
 }
 
-static int uart_rpmsg_ns_op(struct serdev_info *srp, struct device *dev,
-			    struct rpmsg_ns_msg *nmsg)
-{
-	/* ns message can be of two type: channel creation or suppression. To
-	 * communicate this kind of info the nd_mdg are used. The flag part is
-	 * used to identify a reation or a deletion.
-	 *
-	 * this part seems to be useless because classic rpmsg already implement
-	 * a NS process
-	 */
-
-	/*to complete!*/
-	return -ENOSYS;
-}
-
 /*Called when rx buffer is ready to be read.*/
 static void rpmsg_recv_done(struct serdev_info *srp)
 {
 	struct buffer_manager *bm = srp->bm;
 	struct device dev = srp->serdev->dev;
 	struct rpmsg_hdr *msg;
-	struct rpmsg_ns_msg *nmsg;
 	int err;
 
 	/*transform the void* message in the appropriate type*/
-	/*there's more than one type so I need to complete this func*/
 	if (bm->msg_type == SERDEV_RPROC_RPMSG) {
 		msg = (struct rpmsg_hdr *)bm->rbuf;
 
 		err = rpmsg_recv_single(srp, &dev, msg, bm->msg_len);
 		if (err)
-			dev_err(&dev, "recv: somthing went wrong (%d)", err);
-
-	} else if (bm->msg_type == SERDEV_RPROC_ANNOUNCE) {
-		nmsg = (struct rpmsg_ns_msg *)bm->rbuf;
-		err = uart_rpmsg_ns_op(srp, &dev, nmsg);
-		if (err)
-			dev_err(&dev, "ns_op: somthing went wrong (%d)", err);
+			dev_err(&dev, "recv: something went wrong (%d)", err);
 
 	} else {
 		dev_err(&dev, "invalid message type");
