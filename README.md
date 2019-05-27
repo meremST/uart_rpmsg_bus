@@ -21,7 +21,7 @@ the example bellow show how it can be declared for a STM32MP1-dk2 board. This de
 	status = "okay";
 	stm32f4_uart{
 		compatible = "st,stm32f4-uart";
-		max-speed = <38400>;
+		max-speed = <57600>;
 	};
 };
 ```
