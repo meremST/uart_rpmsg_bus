@@ -54,7 +54,7 @@ struct buffer_manager {
 	unsigned char msg_type;
 	int msg_len;
 
-	void *rbuf;		/* should I pretect his acces ? */
+	void *rbuf;		/* should I protect his acces ? */
 };
 
 /**
@@ -118,8 +118,6 @@ struct serdev_rproc_hdr {
 
 /**
  * enum serdev_rproc_type - types of messages that can be sent through uart
- *
- * the uart annoucement sytem is using ns_msg
  *
  * @SERDEV_RPROC_RPMSG: standard rpmsg
  */
@@ -452,18 +450,11 @@ static struct rpmsg_device *rpmsg_create_channel(struct serdev_info *srp,
  * message will be sent to the remote processor which the @rpdev channel
  * belongs to.
  *
- * The message is sent using one of the TX buffers that are available for
- * communication with this remote processor.
+ * The message is sent via the uart link there is no buffer like in the virtio 
+ * bus.
  *
- * If @wait is true, the caller will be blocked until either a TX buffer is
- * available, or 15 seconds elapses (we don't want callers to
- * sleep indefinitely due to misbehaving remote processors), and in that
- * case -ERESTARTSYS is returned. The number '15' itself was picked
- * arbitrarily; there's little point in asking drivers to provide a timeout
- * value themselves.
+ * The @wait value is unused but it still here for compatibility reasons. 
  *
- * Otherwise, if @wait is false, and there are no TX buffers available,
- * the function will immediately fail, and -ENOMEM will be returned.
  *
  * Normally drivers shouldn't use this function directly; instead, drivers
  * should use the appropriate rpmsg_{try}send{to, _offchannel} API
@@ -614,10 +605,6 @@ static int uart_get_buffer_size(struct rpmsg_endpoint *ept)
 	return bm->buf_size;
 }
 
-/****************************/
-/*BRAND NEW RECEPTION SYSTEM*/
-/****************************/
-
 /*send data to the appropriate device*/
 static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 			     struct rpmsg_hdr *msg, unsigned int len)
@@ -694,11 +681,11 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	}
 }
 
-//rpmsg_xmit_done
 
 /*buffer manager functions*/
 /**
  * uart_rpmsg_append_data - return the count of data received or an error
+ * ...
  */
 static int
 uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
@@ -749,7 +736,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	if (!bm->flag_msg_recv && (byte_stored >= sizeof(s_hdr))) {
 		/*Check in the header to know how many data we're waiting for*/
 		memcpy(&s_hdr, bm->rx_raw_buffer, sizeof(s_hdr));
-		if(s_hdr.len > MAX_RPMSG_BUF_SIZE){
+		if(s_hdr.len > bm->buf_size){
 			dev_err(&dev, "msg length too high");
 			ret = -ENOMEM;
 			goto err_bm;
@@ -818,8 +805,6 @@ static const struct of_device_id rpmsg_uart_of_match[] = {
 	{}
 };
 MODULE_DEVICE_TABLE(of, rpmsg_uart_of_match);
-
-/*************************/
 
 /* invoked when a name service announcement arrives */
 static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
@@ -931,7 +916,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	bm->rbuf = kzalloc(MAX_RPMSG_BUF_SIZE, GFP_KERNEL);
 	if (!(bm->rbuf)) {
 		err = -ENOMEM;
-		goto free_rbuf;
+		goto free_all;
 	}
 
 	bm->rx_raw_tail = bm->rx_raw_buffer;
@@ -947,7 +932,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	err = serdev_device_open(serdev);
 	if (err) {
 		dev_err(&serdev->dev, "Unable to open device\n");
-		goto free_srp;
+		goto free_all;
 	}
 
 	speed = serdev_device_set_baudrate(serdev, speed);
@@ -965,7 +950,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 		if (!srp->ns_ept) {
 			dev_err(&serdev->dev, "failed to create the ns ept\n");
 			err = -ENOMEM;
-			goto free_srp;
+			goto free_all;
 		}
 	}
 
@@ -973,14 +958,12 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 
 	/*succes*/
 	return 0;
-
-free_rbuf:
+free_all:
 	kfree(bm->rbuf);
 free_rawbuf:
 	kfree(bm->rx_raw_buffer);
 free_bm:
 	kfree(bm);
-free_srp:
 	kfree(srp);
 of_err:
 	return err;
