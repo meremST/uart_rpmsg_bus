@@ -862,6 +862,57 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
 	return 0;
 }
 
+/*Buffer manager dedicated functions*/
+
+/**
+ * buffer_manager_init - initialize buffer manager object
+ * @bm:		the buffer manager instance
+ * @buf_size:	the internal buffer size
+ */
+static int buffer_manager_init(struct buffer_manager *bm,
+				      const int buf_size)
+{
+	int err = 0;
+	uint raw_b_size = buf_size + sizeof(struct serdev_rproc_hdr);
+
+	if(buf_size < 0)
+		return -EINVAL;
+
+	/*Memory alloc rx_raw_left and rbuf*/
+	bm->rx_raw_buffer = kzalloc(raw_b_size, GFP_KERNEL);
+	if (!(bm->rx_raw_buffer))
+		return -ENOMEM;
+
+	bm->rbuf = kzalloc(buf_size, GFP_KERNEL);
+	if (!(bm->rbuf)) {
+		err = -ENOMEM;
+		goto err_rbuf;
+	}
+
+	bm->buf_size = buf_size;
+	bm->flag_msg_recv = false;
+	bm->first_byte_rx = false;
+
+	bm->rx_raw_tail = bm->rx_raw_buffer;
+	bm->rx_raw_left = bm->buf_size;
+
+	return 0;
+
+err_rbuf:
+	kfree(bm->rx_raw_buffer);
+	return err;
+}
+
+/**
+ * buffer_manager_deinit - clear buffer manager object
+ * @bm:		the buffer manager instance
+ */
+static void buffer_manager_deinit(struct buffer_manager *bm)
+{
+	kfree(bm->rx_raw_buffer);
+	kfree(bm->rbuf);
+}
+
 static int uart_rpmsg_probe(struct serdev_device *serdev)
 {
 	/* 
@@ -874,12 +925,12 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	struct device_node *np = serdev->dev.of_node;
 	struct buffer_manager *bm;
 	int err = 0;
-	uint raw_b_size = MAX_RPMSG_BUF_SIZE + sizeof(struct serdev_rproc_hdr);
+	//uint raw_b_size = MAX_RPMSG_BUF_SIZE + sizeof(struct serdev_rproc_hdr);
 
 	err = of_property_read_u32(np, "max-speed", &max_speed);
 	if (err) {
 		dev_err(&serdev->dev, "Bad device description\n");
-		goto of_err;
+		return err;
 	}
 	if (speed > max_speed)
 		speed = max_speed;
@@ -892,36 +943,18 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	serdev_device_set_drvdata(serdev, srp);
 
 	/*
-	 * !Instanciation of buf_manager, a new entity in charge of the data
-	 * gesture. (create a specific in function for that):
+	 * Instanciation of buf_manager, a new entity in charge of the data
+	 * gesture.
 	 */
 	bm = kzalloc(sizeof(*bm), GFP_KERNEL);
 	if (!bm) {
 		err = -ENOMEM;
-		goto free_bm;
+		goto err_bm;
 	}
 
-	/*put this in a buffer_manager 'init' function*/
-	bm->buf_size = MAX_RPMSG_BUF_SIZE;
-	bm->flag_msg_recv = false;
-	bm->first_byte_rx = false;
-
-	/*Memory alloc rx_raw_left and rbuf*/
-	bm->rx_raw_buffer = kzalloc(raw_b_size, GFP_KERNEL);
-	if (!(bm->rx_raw_buffer)) {
-		err = -ENOMEM;
-		goto free_rawbuf;
-	}
-
-	bm->rbuf = kzalloc(MAX_RPMSG_BUF_SIZE, GFP_KERNEL);
-	if (!(bm->rbuf)) {
-		err = -ENOMEM;
-		goto free_all;
-	}
-
-	bm->rx_raw_tail = bm->rx_raw_buffer;
-	bm->rx_raw_left = bm->buf_size;
-	/*buffer_manager 'init' function up here */
+	err = buffer_manager_init(bm, MAX_RPMSG_BUF_SIZE);
+	if(err)
+		goto err_bm_init;
 
 	srp->bm = bm;
 
@@ -932,7 +965,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	err = serdev_device_open(serdev);
 	if (err) {
 		dev_err(&serdev->dev, "Unable to open device\n");
-		goto free_all;
+		goto err_serdev_open;
 	}
 
 	speed = serdev_device_set_baudrate(serdev, speed);
@@ -950,7 +983,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 		if (!srp->ns_ept) {
 			dev_err(&serdev->dev, "failed to create the ns ept\n");
 			err = -ENOMEM;
-			goto free_all;
+			goto err_ept_create;
 		}
 	}
 
@@ -958,14 +991,16 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 
 	/*succes*/
 	return 0;
-free_all:
-	kfree(bm->rbuf);
-free_rawbuf:
-	kfree(bm->rx_raw_buffer);
-free_bm:
+
+err_ept_create:
+	serdev_device_close(serdev);
+err_serdev_open:
+	buffer_manager_deinit(bm);
+err_bm_init:
 	kfree(bm);
+err_bm:
 	kfree(srp);
-of_err:
+
 	return err;
 }
 
@@ -989,12 +1024,9 @@ static void uart_rpmsg_remove(struct serdev_device *serdev)
 	if (srp->ns_ept)
 		__rpmsg_destroy_ept(srp, srp->ns_ept);
 
-	/*!free memory of buffer manager*/
-	/*Should create a buffer manager deinit function here*/
-	kfree(bm->rx_raw_buffer);
-	kfree(bm->rbuf);
+	/*free memory of buffer manager*/
+	buffer_manager_deinit(bm);
 	kfree(bm);
-	/*buffer manager deinit function*/
 
 	idr_destroy(&srp->endpoints);
 
