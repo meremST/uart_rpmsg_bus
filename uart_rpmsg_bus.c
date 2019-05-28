@@ -36,7 +36,7 @@
  * @rx_raw_tail:	pointer to the last receive raw byte
  * @rx_raw_left:	byte left inside the raw buffer
  * @rx_raw_buffer:	raw buffer data
- * @buf_size:   	size of one rx buffer
+ * @buf_size:		size of one rx buffer
  * @rbuf:		address of rx buffers
  *
  * This structure aim to manage data before receiving or sending it. The idea is
@@ -153,6 +153,7 @@ enum rpmsg_ns_flags {
 	RPMSG_NS_CREATE		= 0,
 	RPMSG_NS_DESTROY	= 1,
 };
+
 /**
  * @srp: the remote processor this channel belongs to
  */
@@ -187,14 +188,14 @@ struct serdev_rpmsg_channel {
 static void uart_rpmsg_destroy_ept(struct rpmsg_endpoint *ept);
 static int uart_rpmsg_send(struct rpmsg_endpoint *ept, void *data, int len);
 static int uart_rpmsg_sendto(struct rpmsg_endpoint *ept, void *data, int len,
-			       u32 dst);
+			     u32 dst);
 static int uart_rpmsg_send_offchannel(struct rpmsg_endpoint *ept, u32 src,
-					u32 dst, void *data, int len);
+				      u32 dst, void *data, int len);
 static int uart_rpmsg_trysend(struct rpmsg_endpoint *ept, void *data, int len);
 static int uart_rpmsg_trysendto(struct rpmsg_endpoint *ept, void *data,
-				  int len, u32 dst);
+				int len, u32 dst);
 static int uart_rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src,
-					   u32 dst, void *data, int len);
+					 u32 dst, void *data, int len);
 static int uart_get_buffer_size(struct rpmsg_endpoint *ept);
 
 static const struct rpmsg_endpoint_ops uart_endpoint_ops = {
@@ -279,10 +280,10 @@ free_ept:
 	return NULL;
 }
 
-static struct rpmsg_endpoint *uart_rpmsg_create_ept(struct rpmsg_device *rpdev,
-						    rpmsg_rx_cb_t cb,
-						    void *priv,
-						    struct rpmsg_channel_info chinfo)
+static struct rpmsg_endpoint *uart_create_ept(struct rpmsg_device *rpdev,
+					      rpmsg_rx_cb_t cb,
+					      void *priv,
+					      struct rpmsg_channel_info chinfo)
 {
 	struct serdev_rpmsg_channel *sch = to_serdev_rpmsg_channel(rpdev);
 
@@ -332,13 +333,14 @@ static int uart_rpmsg_announce_create(struct rpmsg_device *rpdev)
 
 	/* need to tell remote processor's name service about this channel ? */
 	if (rpdev->announce && rpdev->ept && RPMSG_F_NS_SUPPORT) {
-		struct rpmsg_ns_msg nsm;
+		struct rpmsg_ns_msg ns_msg;
+		int ns_size = sizeof(ns_msg);
 
-		strncpy(nsm.name, rpdev->id.name, RPMSG_NAME_SIZE);
-		nsm.addr = rpdev->ept->addr;
-		nsm.flags = RPMSG_NS_CREATE;
+		strncpy(ns_msg.name, rpdev->id.name, RPMSG_NAME_SIZE);
+		ns_msg.addr = rpdev->ept->addr;
+		ns_msg.flags = RPMSG_NS_CREATE;
 
-		err = rpmsg_sendto(rpdev->ept, &nsm, sizeof(nsm), RPMSG_NS_ADDR);
+		err = rpmsg_sendto(rpdev->ept, &ns_msg, ns_size, RPMSG_NS_ADDR);
 		if (err)
 			dev_err(dev, "failed to announce service %d\n", err);
 	}
@@ -368,8 +370,9 @@ static int uart_rpmsg_announce_destroy(struct rpmsg_device *rpdev)
 
 	return err;
 }
+
 static const struct rpmsg_device_ops uart_rpmsg_ops = {
-	.create_ept = uart_rpmsg_create_ept,
+	.create_ept = uart_create_ept,
 	.announce_create = uart_rpmsg_announce_create,
 	.announce_destroy = uart_rpmsg_announce_destroy,
 };
@@ -401,7 +404,7 @@ static struct rpmsg_device *rpmsg_create_channel(struct serdev_info *srp,
 		/* decrement the matched device's refcount back */
 		put_device(tmp);
 		dev_err(dev, "channel %s:%x:%x already exist\n",
-				chinfo->name, chinfo->src, chinfo->dst);
+			chinfo->name, chinfo->src, chinfo->dst);
 		return NULL;
 	}
 
@@ -450,10 +453,10 @@ static struct rpmsg_device *rpmsg_create_channel(struct serdev_info *srp,
  * message will be sent to the remote processor which the @rpdev channel
  * belongs to.
  *
- * The message is sent via the uart link there is no buffer like in the virtio 
+ * The message is sent via the uart link there is no buffer like in the virtio
  * bus.
  *
- * The @wait value is unused but it still here for compatibility reasons. 
+ * The @wait value is unused but it still here for compatibility reasons.
  *
  *
  * Normally drivers shouldn't use this function directly; instead, drivers
@@ -474,7 +477,7 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	struct rpmsg_hdr *msg;
 	struct serdev_rproc_hdr s_hdr;
 	int msg_size = sizeof(struct rpmsg_hdr) + len;
-	int s_hdr_size = sizeof(struct serdev_rproc_hdr);
+	int s_hdr_len = sizeof(struct serdev_rproc_hdr);
 	int ret;
 
 	/* bcasting isn't allowed */
@@ -527,7 +530,7 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 	 * The serdev_rproc_hdr is sent first to indicate what kind and how
 	 * much data the remote proc is going to receive.
 	 */
-	ret = serdev_device_write(serdev, (uint8_t *)&s_hdr, s_hdr_size, 0xFFFF);
+	ret = serdev_device_write(serdev, (uint8_t *)&s_hdr, s_hdr_len, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
 		goto err_send;
@@ -554,7 +557,7 @@ static int uart_rpmsg_send(struct rpmsg_endpoint *ept, void *data, int len)
 }
 
 static int uart_rpmsg_sendto(struct rpmsg_endpoint *ept, void *data, int len,
-			       u32 dst)
+			     u32 dst)
 {
 	struct rpmsg_device *rpdev = ept->rpdev;
 	u32 src = ept->addr;
@@ -563,7 +566,7 @@ static int uart_rpmsg_sendto(struct rpmsg_endpoint *ept, void *data, int len,
 }
 
 static int uart_rpmsg_send_offchannel(struct rpmsg_endpoint *ept, u32 src,
-					u32 dst, void *data, int len)
+				      u32 dst, void *data, int len)
 {
 	struct rpmsg_device *rpdev = ept->rpdev;
 
@@ -579,7 +582,7 @@ static int uart_rpmsg_trysend(struct rpmsg_endpoint *ept, void *data, int len)
 }
 
 static int uart_rpmsg_trysendto(struct rpmsg_endpoint *ept, void *data,
-				  int len, u32 dst)
+				int len, u32 dst)
 {
 	struct rpmsg_device *rpdev = ept->rpdev;
 	u32 src = ept->addr;
@@ -588,7 +591,7 @@ static int uart_rpmsg_trysendto(struct rpmsg_endpoint *ept, void *data,
 }
 
 static int uart_rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src,
-					   u32 dst, void *data, int len)
+					 u32 dst, void *data, int len)
 {
 	struct rpmsg_device *rpdev = ept->rpdev;
 
@@ -652,8 +655,9 @@ static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 
 		/* farewell, ept, we don't need you anymore */
 		kref_put(&ept->refcount, __ept_release);
-	} else
+	} else {
 		dev_warn(dev, "msg received with no recipient\n");
+	}
 
 	/*Buffer gesture Here?*/
 
@@ -681,7 +685,6 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	}
 }
 
-
 /*buffer manager functions*/
 /**
  * uart_rpmsg_append_data - return the count of data received or an error
@@ -698,7 +701,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	int byte_stored = 0;
 	size_t old_len = len;
 
-	if (!bm->first_byte_rx) { 
+	if (!bm->first_byte_rx) {
 		/*searching for the first transmit byte*/
 		for (i = 0; i < old_len; i++) {
 			if (*((uint16_t *)dat) == 0xbe57) {
@@ -733,10 +736,10 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	}
 
 	byte_stored = bm->buf_size - *byte_left;
-	if (!bm->flag_msg_recv && (byte_stored >= sizeof(s_hdr))) {
+	if (!bm->flag_msg_recv && byte_stored >= sizeof(s_hdr)) {
 		/*Check in the header to know how many data we're waiting for*/
 		memcpy(&s_hdr, bm->rx_raw_buffer, sizeof(s_hdr));
-		if(s_hdr.len > bm->buf_size){
+		if (s_hdr.len > bm->buf_size) {
 			dev_err(&dev, "msg length too high");
 			ret = -ENOMEM;
 			goto err_bm;
@@ -748,13 +751,11 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		bm->msg_len = s_hdr.len;
 		bm->msg_type = s_hdr.msg_type;
 		bm->flag_msg_recv = true;
-	}
-	else if (*byte_left == 0) {
+	} else if (*byte_left == 0) {
 		/*the message is fully received*/
 		unsigned char *msg_start = bm->rx_raw_buffer + sizeof(s_hdr);
 
 		/*the message is complete, we can copy it in rbuf*/
-		// IDEA: buf = get_rx_buf(bm);
 		memcpy(bm->rbuf, msg_start, bm->msg_len);
 
 		/*notify rpmsg_recv_done*/
@@ -769,7 +770,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		bm->first_byte_rx = false;
 		*byte_left = bm->buf_size;
 
-		/*put the tail to the begining of the buffer*/
+		/*put the tail to the beginning of the buffer*/
 		bm->rx_raw_tail = bm->rx_raw_buffer;
 	}
 
@@ -870,12 +871,12 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
  * @buf_size:	the internal buffer size
  */
 static int buffer_manager_init(struct buffer_manager *bm,
-				      const int buf_size)
+			       const int buf_size)
 {
 	int err = 0;
 	uint raw_b_size = buf_size + sizeof(struct serdev_rproc_hdr);
 
-	if(buf_size < 0)
+	if (buf_size < 0)
 		return -EINVAL;
 
 	/*Memory alloc rx_raw_left and rbuf*/
@@ -915,7 +916,7 @@ static void buffer_manager_deinit(struct buffer_manager *bm)
 
 static int uart_rpmsg_probe(struct serdev_device *serdev)
 {
-	/* 
+	/*
 	 * A faster speed can causes problems:
 	 * some unexpected 0 appear in the data randomly.
 	 */
@@ -925,7 +926,6 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	struct device_node *np = serdev->dev.of_node;
 	struct buffer_manager *bm;
 	int err = 0;
-	//uint raw_b_size = MAX_RPMSG_BUF_SIZE + sizeof(struct serdev_rproc_hdr);
 
 	err = of_property_read_u32(np, "max-speed", &max_speed);
 	if (err) {
@@ -953,7 +953,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	}
 
 	err = buffer_manager_init(bm, MAX_RPMSG_BUF_SIZE);
-	if(err)
+	if (err)
 		goto err_bm_init;
 
 	srp->bm = bm;
