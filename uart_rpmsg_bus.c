@@ -54,7 +54,7 @@ struct buffer_manager {
 	unsigned char msg_type;
 	int msg_len;
 
-	void *rbuf;		/* should I protect his acces ? */
+	void *rbuf;
 };
 
 /**
@@ -113,7 +113,7 @@ struct serdev_rproc_hdr {
 	u8 msg_type;
 } __packed;
 
-/*The magic number used to identifie the uart message as a rpmsg com*/
+/*The magic number used to identify rpmsg communications through uart*/
 #define	SERDEV_RPMSG_MAGIC_NUMBER	(0xbe57)
 
 /**
@@ -726,8 +726,9 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 
 	/*byte_left can't be negative*/
 	/* Enter in this situation means that we received more data that the msg
-	 * is supposed to have. For now the driver is not able to receive a
-	 * second message while the first one isn't over.
+	 * is supposed to have.
+	 * For now the driver is not able to receive a second message while the
+	 * first one isn't over. 
 	 */
 	if (*byte_left < 0) {
 		dev_err(&dev, "Too much data received");
@@ -758,13 +759,6 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		/*the message is complete, we can copy it in rbuf*/
 		memcpy(bm->rbuf, msg_start, bm->msg_len);
 
-		/*notify rpmsg_recv_done*/
-		/* for the moment the function is directly called but
-		 * it's possible to add it in a workqueue and add a
-		 * mutex for the rbuf acces.
-		 */
-		rpmsg_recv_done(srp);
-
 		/*clean buffer manager*/
 		bm->flag_msg_recv = false;
 		bm->first_byte_rx = false;
@@ -772,6 +766,13 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 
 		/*put the tail to the beginning of the buffer*/
 		bm->rx_raw_tail = bm->rx_raw_buffer;
+
+		/*notify rpmsg_recv_done*/
+		/* for the moment the function is directly called but
+		 * it's possible to add it in a workqueue and add a
+		 * mutex for the rbuf acces.
+		 */
+		rpmsg_recv_done(srp);
 	}
 
 	return old_len;
