@@ -79,7 +79,6 @@ enum rpmsg_ns_flags {
 
 enum serdev_rproc_type {
 	SERDEV_RPROC_RPMSG	= 0,
-	SERDEV_RPROC_ANNOUNCE	= 1,
 };
 
 
@@ -218,12 +217,12 @@ int main(void)
   msg = malloc(RPMSG_MAX_BUF_SIZE);
   serdev_hdr = malloc(sizeof(struct serdev_rproc_hdr));
 
-  /*ept creationj*/
+  /*ept creation*/
   if(uart_rpmsg_send_ns_message(&UartHandle, RPMSG_SERVICE_NAME, 0x1, RPMSG_NS_CREATE)!= RPMSG_SUCCESS){
 	  Error_Handler();
   }
 
-  /*launch answer reception*/
+  /*launch reception interruption*/
   BSP_LED_On(LED2);
   if(HAL_UART_Receive_IT(&UartHandle, (uint8_t *)serdev_hdr, serdev_hdr_size) != HAL_OK){
 	  /* Initialization Error */
@@ -238,13 +237,13 @@ int main(void)
 	  while (UartReady != SET);
 	  UartReady = RESET;
 
-
+	  /*send the message back to the sender*/
 	  if(uart_rpmsg_send(&UartHandle, msg->dst, msg->src,msg->data,msg->len) != RPMSG_SUCCESS){
 		  Error_Handler();
 	  }
 
+	  /*uart_rpmsg_wait_for_message kind of*/
 	  if(HAL_UART_Receive_IT(&UartHandle, (uint8_t *)serdev_hdr, serdev_hdr_size) != HAL_OK){
-	  	  /* Initialization Error */
 		  Error_Handler();
 	  }
 
@@ -274,7 +273,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
 		UartReady = SET;
 	}
 
-	/*if(HAL_UART_Receive_IT(&UartHandle, (uint8_t *)&serdev_hdr, serdev_hdr_size) != HAL_OK){
+	/*if(HAL_UART_Receive_IT(UartHandle, (uint8_t *)&serdev_hdr, serdev_hdr_size) != HAL_OK){
 		Error_Handler();
 	}*/
 }
