@@ -870,7 +870,7 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
  * @bm:		the buffer manager instance
  * @buf_size:	the internal buffer size
  */
-static int buffer_manager_init(struct buffer_manager *bm,
+static inline int buffer_manager_init(struct buffer_manager *bm,
 			       const int buf_size)
 {
 	int err = 0;
@@ -908,7 +908,7 @@ err_rbuf:
  * buffer_manager_deinit - clear buffer manager object
  * @bm:		the buffer manager instance
  */
-static void buffer_manager_deinit(struct buffer_manager *bm)
+static inline void buffer_manager_deinit(struct buffer_manager *bm)
 {
 	kfree(bm->rx_raw_buffer);
 	kfree(bm->rbuf);
@@ -1017,6 +1017,8 @@ static void uart_rpmsg_remove(struct serdev_device *serdev)
 	struct buffer_manager *bm = srp->bm;
 	int ret;
 
+	serdev_device_close(serdev);
+
 	ret = device_for_each_child(&serdev->dev, NULL, rpmsg_remove_device);
 	if (ret)
 		dev_warn(&serdev->dev, "can't remove rpmsg device: %d\n", ret);
@@ -1029,8 +1031,6 @@ static void uart_rpmsg_remove(struct serdev_device *serdev)
 	kfree(bm);
 
 	idr_destroy(&srp->endpoints);
-
-	serdev_device_close(serdev);
 
 	kfree(srp);
 }
