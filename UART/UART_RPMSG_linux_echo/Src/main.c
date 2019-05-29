@@ -2,8 +2,8 @@
   ******************************************************************************
   * @file    UART/UART_Printf/Src/main.c 
   * @author  MCD Application Team
-  * @brief   This example shows how to retarget the C library printf function 
-  *          to the UART.
+  * @brief   This application send messages back to  a master processor via an 
+  * uart based rpmsg bus
   ******************************************************************************
   * @attention
   *
