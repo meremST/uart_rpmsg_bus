@@ -357,7 +357,8 @@ static int uart_rpmsg_announce_destroy(struct rpmsg_device *rpdev)
 		nsm.addr = rpdev->ept->addr;
 		nsm.flags = RPMSG_NS_DESTROY;
 
-		err = rpmsg_sendto(rpdev->ept, &nsm, sizeof(nsm), RPMSG_NS_ADDR);
+		err = rpmsg_sendto(rpdev->ept, &nsm, sizeof(nsm),
+				   RPMSG_NS_ADDR);
 		if (err)
 			dev_err(dev, "failed to announce service %d\n", err);
 	}
@@ -722,7 +723,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	/* Enter in this situation means that we received more data that the msg
 	 * is supposed to have.
 	 * For now the driver is not able to receive a second message while the
-	 * first one isn't over. 
+	 * first one isn't over.
 	 */
 	if (*byte_left < 0) {
 		dev_err(&dev, "Too much data received");
@@ -866,7 +867,7 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
  * @buf_size:	the internal buffer size
  */
 static inline int buffer_manager_init(struct buffer_manager *bm,
-			       const int buf_size)
+				      const int buf_size)
 {
 	int err = 0;
 	uint raw_b_size = buf_size + sizeof(struct serdev_rproc_hdr);
