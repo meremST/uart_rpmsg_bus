@@ -797,7 +797,7 @@ static struct serdev_device_ops rpmsg_serdev_ops = {
 
 static const struct of_device_id rpmsg_uart_of_match[] = {
 	{
-	 .compatible = "st,stm32f4-uart", //change it later
+	 .compatible = "st,uart_rpmsg", //change it later
 	},
 	{}
 };
@@ -914,7 +914,8 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 {
 	/*
 	 * A faster speed can causes problems:
-	 * some unexpected 0 appear in the data randomly.
+	 * some unexpected 0 can appear in the data.
+	 * TODO: add a way to modify speed in userland
 	 */
 	u32 speed = 57600;
 	u32 max_speed;
