@@ -19,7 +19,7 @@ the example bellow show how it can be declared for a STM32MP1-dk2 board. This de
 &uart7 {
 	status = "okay";
 	stm32f4_uart{
-		compatible = "st,stm32f4-uart";
+		compatible = "st,uart_rpmsg";
 		max-speed = <57600>;
 	};
 };
