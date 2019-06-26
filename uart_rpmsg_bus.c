@@ -30,7 +30,10 @@
  * @rx_raw_tail:	pointer to the last receive raw byte
  * @rx_raw_left:	byte left inside the raw buffer
  * @rx_raw_buffer:	raw buffer data
+ * @flag_msg_recv:	flag used when a message header is received
+ * @first_byte_rx:	flaf used when the magic number is detected
  * @buf_size:		size of one rx buffer
+ * @msg_type:		the kind of message that is received
  * @rbuf:		address of rx buffers
  *
  * This structure aim to manage data before receiving or sending it. The idea is
@@ -38,8 +41,8 @@
  * multiples rpmsg busses types.
  */
 struct buffer_manager {
-	unsigned char *rx_raw_tail;		/* pointer to next byte */
-	int rx_raw_left;			/* bytes left in queue  */
+	unsigned char *rx_raw_tail;
+	int rx_raw_left;
 	unsigned char *rx_raw_buffer;
 	bool flag_msg_recv;
 	bool first_byte_rx;
@@ -223,7 +226,7 @@ static void __ept_release(struct kref *kref)
 	kfree(ept);
 }
 
-/* for more info, see below documentation of rpmsg_create_ept() */
+/* For more info, see below documentation of rpmsg_create_ept() */
 static struct rpmsg_endpoint *__rpmsg_create_ept(struct serdev_info *srp,
 						 struct rpmsg_device *rpdev,
 						 rpmsg_rx_cb_t cb,
@@ -245,7 +248,7 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct serdev_info *srp,
 	ept->priv = priv;
 	ept->ops = &uart_endpoint_ops;
 
-	/* do we need to allocate a local address ? */
+	/* Do we need to allocate a local address ? */
 	if (addr == RPMSG_ADDR_ANY) {
 		id_min = RPMSG_RESERVED_ADDRESSES;
 		id_max = 0;
@@ -256,7 +259,7 @@ static struct rpmsg_endpoint *__rpmsg_create_ept(struct serdev_info *srp,
 
 	mutex_lock(&srp->endpoints_lock);
 
-	/* bind the endpoint to an rpmsg address (and allocate one if needed) */
+	/* Bind the endpoint to an rpmsg address (and allocate one if needed) */
 	id = idr_alloc(&srp->endpoints, ept, id_min, id_max, GFP_KERNEL);
 	if (id < 0) {
 		dev_err(dev, "idr_alloc failed: %d\n", id);
@@ -317,15 +320,13 @@ static void uart_rpmsg_destroy_ept(struct rpmsg_endpoint *ept)
 	__rpmsg_destroy_ept(sch->srp, ept);
 }
 
-/*announcement are made when a new rpmsg driver is probbed or removed*/
+/* Announcement are made when a new rpmsg driver is probbed or removed */
 static int uart_rpmsg_announce_create(struct rpmsg_device *rpdev)
 {
-	//struct serdev_rpmsg_channel *sch = to_serdev_rpmsg_channel(rpdev);
-	//struct serdev_info *srp = sch->srp;
 	struct device *dev = &rpdev->dev;
 	int err = 0;
 
-	/* need to tell remote processor's name service about this channel ? */
+	/* Need to tell remote processor's name service about this channel ? */
 	if (rpdev->announce && rpdev->ept && RPMSG_F_NS_SUPPORT) {
 		struct rpmsg_ns_msg ns_msg;
 		int ns_size = sizeof(ns_msg);
@@ -344,12 +345,10 @@ static int uart_rpmsg_announce_create(struct rpmsg_device *rpdev)
 
 static int uart_rpmsg_announce_destroy(struct rpmsg_device *rpdev)
 {
-	//struct serdev_rpmsg_channel *sch = to_serdev_rpmsg_channel(rpdev);
-	//struct serdev_info *srp = sch->srp;
 	struct device *dev = &rpdev->dev;
 	int err = 0;
 
-	/* tell remote processor's name service we're removing this channel */
+	/* Tell remote processor's name service we're removing this channel */
 	if (rpdev->announce && rpdev->ept && RPMSG_F_NS_SUPPORT) {
 		struct rpmsg_ns_msg nsm;
 
@@ -434,7 +433,7 @@ static struct rpmsg_device *rpmsg_create_channel(struct serdev_info *srp,
 }
 
 /**
- * rpmsg_send_offchannel_raw() - send a message across to the remote processor
+ * uart_rpmsg_send_off_chnl_raw() - send a message across to the remote processor
  * @rpdev: the rpmsg channel
  * @src: source address
  * @dst: destination address
@@ -460,9 +459,9 @@ static struct rpmsg_device *rpmsg_create_channel(struct serdev_info *srp,
  *
  * Returns 0 on success and an appropriate error value on failure.
  */
-static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
-				     u32 src, u32 dst,
-				     void *data, int len, bool wait)
+static int uart_rpmsg_send_off_chnl_raw(struct rpmsg_device *rpdev,
+					u32 src, u32 dst,
+					void *data, int len, bool wait)
 {
 	struct serdev_rpmsg_channel *sch = to_serdev_rpmsg_channel(rpdev);
 	struct serdev_info *srp = sch->srp;
@@ -531,7 +530,7 @@ static int rpmsg_send_offchannel_raw(struct rpmsg_device *rpdev,
 		goto err_send;
 	}
 
-	/*Then the RPMS itself is sent*/
+	/* Then the RPMS itself is sent */
 	ret = serdev_device_write(serdev, (uint8_t *)msg, msg_size, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
@@ -548,7 +547,7 @@ static int uart_rpmsg_send(struct rpmsg_endpoint *ept, void *data, int len)
 	struct rpmsg_device *rpdev = ept->rpdev;
 	u32 src = ept->addr, dst = rpdev->dst;
 
-	return rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, true);
+	return uart_rpmsg_send_off_chnl_raw(rpdev, src, dst, data, len, true);
 }
 
 static int uart_rpmsg_sendto(struct rpmsg_endpoint *ept, void *data, int len,
@@ -557,7 +556,7 @@ static int uart_rpmsg_sendto(struct rpmsg_endpoint *ept, void *data, int len,
 	struct rpmsg_device *rpdev = ept->rpdev;
 	u32 src = ept->addr;
 
-	return rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, true);
+	return uart_rpmsg_send_off_chnl_raw(rpdev, src, dst, data, len, true);
 }
 
 static int uart_rpmsg_send_offchannel(struct rpmsg_endpoint *ept, u32 src,
@@ -565,7 +564,7 @@ static int uart_rpmsg_send_offchannel(struct rpmsg_endpoint *ept, u32 src,
 {
 	struct rpmsg_device *rpdev = ept->rpdev;
 
-	return rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, true);
+	return uart_rpmsg_send_off_chnl_raw(rpdev, src, dst, data, len, true);
 }
 
 static int uart_rpmsg_trysend(struct rpmsg_endpoint *ept, void *data, int len)
@@ -573,7 +572,7 @@ static int uart_rpmsg_trysend(struct rpmsg_endpoint *ept, void *data, int len)
 	struct rpmsg_device *rpdev = ept->rpdev;
 	u32 src = ept->addr, dst = rpdev->dst;
 
-	return rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, false);
+	return uart_rpmsg_send_off_chnl_raw(rpdev, src, dst, data, len, false);
 }
 
 static int uart_rpmsg_trysendto(struct rpmsg_endpoint *ept, void *data,
@@ -582,7 +581,7 @@ static int uart_rpmsg_trysendto(struct rpmsg_endpoint *ept, void *data,
 	struct rpmsg_device *rpdev = ept->rpdev;
 	u32 src = ept->addr;
 
-	return rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, false);
+	return uart_rpmsg_send_off_chnl_raw(rpdev, src, dst, data, len, false);
 }
 
 static int uart_rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src,
@@ -590,7 +589,7 @@ static int uart_rpmsg_trysend_offchannel(struct rpmsg_endpoint *ept, u32 src,
 {
 	struct rpmsg_device *rpdev = ept->rpdev;
 
-	return rpmsg_send_offchannel_raw(rpdev, src, dst, data, len, false);
+	return uart_rpmsg_send_off_chnl_raw(rpdev, src, dst, data, len, false);
 }
 
 static int uart_get_buffer_size(struct rpmsg_endpoint *ept)
@@ -603,7 +602,7 @@ static int uart_get_buffer_size(struct rpmsg_endpoint *ept)
 	return bm->buf_size;
 }
 
-/*send data to the appropriate device*/
+/* Send data to the appropriate device */
 static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 			     struct rpmsg_hdr *msg, unsigned int len)
 {
@@ -627,19 +626,19 @@ static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 		return -EINVAL;
 	}
 
-	/* use the dst addr to fetch the callback of the appropriate user */
+	/* Use the dst addr to fetch the callback of the appropriate user */
 	mutex_lock(&srp->endpoints_lock);
 
 	ept = idr_find(&srp->endpoints, msg->dst);
 
-	/* let's make sure no one deallocates ept while we use it */
+	/* Let's make sure no one deallocates ept while we use it */
 	if (ept)
 		kref_get(&ept->refcount);
 
 	mutex_unlock(&srp->endpoints_lock);
 
 	if (ept) {
-		/* make sure ept->cb doesn't go away while we use it */
+		/* Make sure ept->cb doesn't go away while we use it */
 		mutex_lock(&ept->cb_lock);
 
 		if (ept->cb)
@@ -654,12 +653,10 @@ static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 		dev_warn(dev, "msg received with no recipient\n");
 	}
 
-	/*Buffer gesture Here?*/
-
 	return 0;
 }
 
-/*Called when rx buffer is ready to be read.*/
+/* Called when rx buffer is ready to be read. */
 static void rpmsg_recv_done(struct serdev_info *srp)
 {
 	struct buffer_manager *bm = srp->bm;
@@ -667,7 +664,7 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	struct rpmsg_hdr *msg;
 	int err;
 
-	/*transform the void* message in the appropriate type*/
+	/* Transform the void* message in the appropriate type */
 	if (bm->msg_type == SERDEV_RPROC_RPMSG) {
 		msg = (struct rpmsg_hdr *)bm->rbuf;
 
@@ -680,10 +677,9 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	}
 }
 
-/*buffer manager functions*/
+/* Buffer Manager functions*/
 /**
  * uart_rpmsg_append_data - return the count of data received or an error
- * ...
  */
 static int
 uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
@@ -697,29 +693,29 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	size_t old_len = len;
 
 	if (!bm->first_byte_rx) {
-		/*searching for the first transmit byte*/
+		/* Searching for the first transmit byte */
 		for (i = 0; i < old_len; i++) {
 			if (*((uint16_t *)dat) == 0xbe57) {
-			/*when done, we start append process*/
+			/* When done, we start append process */
 				bm->first_byte_rx = true;
 				memcpy(bm->rx_raw_tail, dat, len);
 				*byte_left -= len;
 				bm->rx_raw_tail += len;
 				break;
 			} else {
-			/*in case non valid data we trash it*/
+			/* In case non valid data we trash it */
 				len--;
 				dat++;
 			}
 		}
 	} else {
-		/*usual case of data reception*/
+		/* Usual case of data reception */
 		memcpy(bm->rx_raw_tail, dat, len);
 		*byte_left -= len;
 		bm->rx_raw_tail += len;
 	}
 
-	/*byte_left can't be negative*/
+	/* byte_left can't be negative */
 	/* Enter in this situation means that we received more data that the msg
 	 * is supposed to have.
 	 * For now the driver is not able to receive a second message while the
@@ -733,7 +729,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 
 	byte_stored = bm->buf_size - *byte_left;
 	if (!bm->flag_msg_recv && byte_stored >= sizeof(s_hdr)) {
-		/*Check in the header to know how many data we're waiting for*/
+		/* Check in the header to know how many data we're waiting */
 		memcpy(&s_hdr, bm->rx_raw_buffer, sizeof(s_hdr));
 		if (s_hdr.len > bm->buf_size) {
 			dev_err(&dev, "msg length too high");
@@ -748,22 +744,22 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		bm->msg_type = s_hdr.msg_type;
 		bm->flag_msg_recv = true;
 	} else if (*byte_left == 0) {
-		/*the message is fully received*/
+		/* The message is fully received */
 		unsigned char *msg_start = bm->rx_raw_buffer + sizeof(s_hdr);
 
-		/*the message is complete, we can copy it in rbuf*/
+		/* The message is complete, we can copy it in rbuf */
 		memcpy(bm->rbuf, msg_start, bm->msg_len);
 
-		/*clean buffer manager*/
+		/*Clean buffer manager*/
 		bm->flag_msg_recv = false;
 		bm->first_byte_rx = false;
 		*byte_left = bm->buf_size;
 
-		/*put the tail to the beginning of the buffer*/
+		/*Put the tail to the beginning of the buffer*/
 		bm->rx_raw_tail = bm->rx_raw_buffer;
 
-		/*notify rpmsg_recv_done*/
-		/* for the moment the function is directly called but
+		/* Notify rpmsg_recv_done */
+		/* For the moment the function is directly called but
 		 * it's possible to add it in a workqueue and add a
 		 * mutex for the rbuf acces.
 		 */
@@ -772,7 +768,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 
 	return old_len;
 err_bm:
-	/*reset of buffer manager*/
+	/* Reset of buffer manager */
 	bm->flag_msg_recv = false;
 	bm->first_byte_rx = false;
 	*byte_left = bm->buf_size;
@@ -781,7 +777,7 @@ err_bm:
 	return ret;
 }
 
-/*serdev receive callback called when somme raw data are received*/
+/* Serdev receive callback called when somme raw data are received */
 static int uart_rpmsg_receive(struct serdev_device *serdev,
 			      const unsigned char *data, size_t count)
 {
@@ -803,7 +799,7 @@ static const struct of_device_id rpmsg_uart_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, rpmsg_uart_of_match);
 
-/* invoked when a name service announcement arrives */
+/* Invoked when a name service announcement arrives */
 static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
 		       void *priv, u32 src)
 {
@@ -825,7 +821,7 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
 	}
 
 	/*
-	 * the name service ept does _not_ belong to a real rpmsg channel,
+	 * The name service ept does _not_ belong to a real rpmsg channel,
 	 * and is handled by the rpmsg bus itself.
 	 * for sanity reasons, make sure a valid rpdev has _not_ sneaked
 	 * in somehow.
@@ -859,7 +855,7 @@ static int rpmsg_ns_cb(struct rpmsg_device *rpdev, void *data, int len,
 	return 0;
 }
 
-/*Buffer manager dedicated functions*/
+/* Buffer manager dedicated functions */
 
 /**
  * buffer_manager_init - initialize buffer manager object
@@ -972,9 +968,9 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 
 	serdev_device_set_flow_control(serdev, false);
 
-	/* if supported by the remote processor, enable the name service */
+	/* If supported by the remote processor, enable the name service */
 	if (RPMSG_F_NS_SUPPORT) {
-		/* a dedicated endpoint handles the name service msgs */
+		/* A dedicated endpoint handles the name service msgs */
 		srp->ns_ept = __rpmsg_create_ept(srp, NULL, rpmsg_ns_cb,
 						 srp, RPMSG_NS_ADDR);
 		if (!srp->ns_ept) {
@@ -986,7 +982,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 
 	dev_info(&serdev->dev, "rpmsg host is online\n");
 
-	/*succes*/
+	/* Succes */
 	return 0;
 
 err_ept_create:
@@ -1023,7 +1019,7 @@ static void uart_rpmsg_remove(struct serdev_device *serdev)
 	if (srp->ns_ept)
 		__rpmsg_destroy_ept(srp, srp->ns_ept);
 
-	/*free memory of buffer manager*/
+	/* Free memory of buffer manager */
 	buffer_manager_deinit(bm);
 	kfree(bm);
 
