@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Uart based remote processor messaging bus
+ * Serdev based remote processor messaging bus
  *
  * Copyright (C) STMicroelectronics 2019
  * Author: Maxime MERE for STMicroelectronics.
@@ -67,7 +67,7 @@ struct buffer_manager {
  */
 struct serdev_info {
 	struct serdev_device *serdev;
-	struct buffer_manager *bm;
+	struct buffer_manager bm;
 	struct idr endpoints;
 	struct mutex endpoints_lock;
 	struct rpmsg_endpoint *ns_ept;
@@ -465,7 +465,7 @@ static int uart_rpmsg_send_off_chnl_raw(struct rpmsg_device *rpdev,
 {
 	struct serdev_rpmsg_channel *sch = to_serdev_rpmsg_channel(rpdev);
 	struct serdev_info *srp = sch->srp;
-	struct buffer_manager *bm = srp->bm;
+	struct buffer_manager *bm = &srp->bm;
 	struct serdev_device *serdev = srp->serdev;
 	struct device *dev = &rpdev->dev;
 	struct rpmsg_hdr *msg;
@@ -534,7 +534,6 @@ static int uart_rpmsg_send_off_chnl_raw(struct rpmsg_device *rpdev,
 	ret = serdev_device_write(serdev, (uint8_t *)msg, msg_size, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
-		goto err_send;
 	}
 
 err_send:
@@ -597,7 +596,7 @@ static int uart_get_buffer_size(struct rpmsg_endpoint *ept)
 	struct rpmsg_device *rpdev = ept->rpdev;
 	struct serdev_rpmsg_channel *sch = to_serdev_rpmsg_channel(rpdev);
 	struct serdev_info *srp = sch->srp;
-	struct buffer_manager *bm = srp->bm;
+	struct buffer_manager *bm = &srp->bm;
 
 	return bm->buf_size;
 }
@@ -606,7 +605,7 @@ static int uart_get_buffer_size(struct rpmsg_endpoint *ept)
 static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 			     struct rpmsg_hdr *msg, unsigned int len)
 {
-	struct buffer_manager *bm = srp->bm;
+	struct buffer_manager *bm = &srp->bm;
 	struct rpmsg_endpoint *ept;
 
 	dev_dbg(dev, "From: 0x%x, To: 0x%x, Len: %d, Flags: %d, Reserved: %d\n",
@@ -659,7 +658,7 @@ static int rpmsg_recv_single(struct serdev_info *srp, struct device *dev,
 /* Called when rx buffer is ready to be read. */
 static void rpmsg_recv_done(struct serdev_info *srp)
 {
-	struct buffer_manager *bm = srp->bm;
+	struct buffer_manager *bm = &srp->bm;
 	struct device dev = srp->serdev->dev;
 	struct rpmsg_hdr *msg;
 	int err;
@@ -684,7 +683,7 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 static int
 uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 {
-	struct buffer_manager *bm = srp->bm;
+	struct buffer_manager *bm = &srp->bm;
 	struct serdev_rproc_hdr s_hdr;
 	struct device dev = srp->serdev->dev;
 	int *byte_left = &bm->rx_raw_left;
@@ -695,7 +694,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	if (!bm->first_byte_rx) {
 		/* Searching for the first transmit byte */
 		for (i = 0; i < old_len; i++) {
-			if (*((uint16_t *)dat) == 0xbe57) {
+			if (*((uint16_t *)dat) == SERDEV_RPMSG_MAGIC_NUMBER) {
 			/* When done, we start append process */
 				bm->first_byte_rx = true;
 				memcpy(bm->rx_raw_tail, dat, len);
@@ -723,7 +722,7 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 	 */
 	if (*byte_left < 0) {
 		dev_err(&dev, "Too much data received");
-		ret = -ERANGE;
+		ret = -EINVAL;
 		goto err_bm;
 	}
 
@@ -736,8 +735,8 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 			ret = -ENOMEM;
 			goto err_bm;
 		}
-		/* byte_left will be now equal to the size of the rpmsgmsg minus
-		 * the byte already received
+		/* byte_left will be now equal to the size of the rpmsg msg
+		 * minus the byte already received
 		 */
 		*byte_left = s_hdr.len - (byte_stored - sizeof(s_hdr));
 		bm->msg_len = s_hdr.len;
@@ -917,7 +916,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	u32 max_speed;
 	struct serdev_info *srp;
 	struct device_node *np = serdev->dev.of_node;
-	struct buffer_manager *bm;
+	struct buffer_manager bm;
 	int err = 0;
 
 	err = of_property_read_u32(np, "max-speed", &max_speed);
@@ -928,7 +927,7 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	if (speed > max_speed)
 		speed = max_speed;
 
-	srp = kzalloc(sizeof(*srp), GFP_KERNEL);
+	srp = devm_kzalloc(&serdev->dev, sizeof(*srp), GFP_KERNEL);
 	if (!srp)
 		return -ENOMEM;
 
@@ -939,15 +938,15 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	 * Instanciation of buf_manager, a new entity in charge of the data
 	 * gesture.
 	 */
-	bm = kzalloc(sizeof(*bm), GFP_KERNEL);
+	/*bm = kzalloc(sizeof(*bm), GFP_KERNEL);
 	if (!bm) {
 		err = -ENOMEM;
 		goto err_bm;
-	}
+	}*/
 
-	err = buffer_manager_init(bm, MAX_RPMSG_BUF_SIZE);
+	err = buffer_manager_init(&bm, MAX_RPMSG_BUF_SIZE);
 	if (err)
-		goto err_bm_init;
+		goto err_bm;
 
 	srp->bm = bm;
 
@@ -962,9 +961,12 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	}
 
 	speed = serdev_device_set_baudrate(serdev, speed);
-	dev_info(&serdev->dev, "Using baudrate: %u\n", speed);
+	dev_dbg(&serdev->dev, "Using baudrate: %u\n", speed);
 
-	serdev_device_set_parity(serdev, SERDEV_PARITY_ODD);
+	err = serdev_device_set_parity(serdev, SERDEV_PARITY_ODD);
+	if(err)
+		goto err_set_parity;
+
 
 	serdev_device_set_flow_control(serdev, false);
 
@@ -986,14 +988,11 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	return 0;
 
 err_ept_create:
+err_set_parity:
 	serdev_device_close(serdev);
 err_serdev_open:
-	buffer_manager_deinit(bm);
-err_bm_init:
-	kfree(bm);
+	buffer_manager_deinit(&bm);
 err_bm:
-	kfree(srp);
-
 	return err;
 }
 
@@ -1007,7 +1006,7 @@ static int rpmsg_remove_device(struct device *dev, void *data)
 static void uart_rpmsg_remove(struct serdev_device *serdev)
 {
 	struct serdev_info *srp = serdev_device_get_drvdata(serdev);
-	struct buffer_manager *bm = srp->bm;
+	struct buffer_manager *bm = &srp->bm;
 	int ret;
 
 	serdev_device_close(serdev);
@@ -1021,11 +1020,9 @@ static void uart_rpmsg_remove(struct serdev_device *serdev)
 
 	/* Free memory of buffer manager */
 	buffer_manager_deinit(bm);
-	kfree(bm);
+	//kfree(bm);
 
 	idr_destroy(&srp->endpoints);
-
-	kfree(srp);
 }
 
 static struct serdev_device_driver rpmsg_uart_driver = {
