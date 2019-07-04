@@ -2,8 +2,8 @@
   ******************************************************************************
   * @file    UART/UART_Printf/Src/main.c 
   * @author  MCD Application Team
-  * @brief   This application send messages back to  a master processor via an 
-  * uart based rpmsg bus
+  * @brief   This example shows how to retarget the C library printf function 
+  *          to the UART.
   ******************************************************************************
   * @attention
   *
@@ -50,12 +50,6 @@
 
 /* Private typedef -----------------------------------------------------------*/
 #define RPMSG_NAME_SIZE	(32)
-
-struct serdev_rproc_hdr {
-	uint16_t magic_number; //0xbe57 #beST
-	uint16_t len;
-	uint8_t msg_type;
-} __attribute__((__packed__));
 
 struct rpmsg_hdr {
 	uint32_t src;
@@ -106,6 +100,7 @@ enum serdev_rproc_type {
 /* Private variables ---------------------------------------------------------*/
 struct serdev_rproc_hdr *serdev_hdr = NULL;
 struct rpmsg_hdr *msg = NULL;
+uint16_t *magic_number;
 
 /* UART handler declaration */
 UART_HandleTypeDef UartHandle;
@@ -118,14 +113,11 @@ static void Error_Handler(void);
 /* Private functions ---------------------------------------------------------*/
 static inline int uart_rpmsg_send(UART_HandleTypeDef *UartHandle,uint32_t src, uint32_t dst,const void *data,int len)
 {
-	struct serdev_rproc_hdr s_hdr;
+	int msg_size = len + sizeof(struct rpmsg_hdr);
+	uint16_t mag_num = SERDEV_RPMSG_MAGIC_NUMBER;
 	struct rpmsg_hdr *msg_container = malloc(RPMSG_MAX_BUF_SIZE);
 	if(!msg_container)
 		return RPMSG_ERR_NO_MEM;
-
-	s_hdr.magic_number = SERDEV_RPMSG_MAGIC_NUMBER;
-	s_hdr.len = len + sizeof(struct rpmsg_hdr);
-	s_hdr.msg_type = SERDEV_RPROC_RPMSG;
 
 	msg_container->src = src;
 	msg_container->dst = dst;
@@ -135,12 +127,12 @@ static inline int uart_rpmsg_send(UART_HandleTypeDef *UartHandle,uint32_t src, u
 
 	memcpy(msg_container->data,data,len);
 
-	if(HAL_UART_Transmit(UartHandle, (uint8_t *)&s_hdr, sizeof(struct serdev_rproc_hdr), 0xFFFF) != HAL_OK){
+	if(HAL_UART_Transmit(UartHandle, (uint8_t *)&mag_num, 2, 0xFFFF) != HAL_OK){
 	  	  free(msg_container);
 	  	  return RPMSG_ERR_TRANSMIT;
 	  }
 
-	  if(HAL_UART_Transmit(UartHandle, (uint8_t *)msg_container, s_hdr.len, 0xFFFF) != HAL_OK){
+	  if(HAL_UART_Transmit(UartHandle, (uint8_t *)msg_container, msg_size, 0xFFFF) != HAL_OK){
 		  free(msg_container);
 		  return RPMSG_ERR_TRANSMIT;
 	  }
@@ -179,9 +171,7 @@ int main(void)
        - Set NVIC Group Priority to 4
        - Global MSP (MCU Support Package) initialization
      */
-  uint8_t serdev_hdr_size = sizeof(struct serdev_rproc_hdr);
   struct rpmsg_ns_msg ns_msg;
-  struct serdev_rproc_hdr s_hdr;
   uint32_t temp_src;
   HAL_Init();
   
@@ -212,10 +202,10 @@ int main(void)
     /* Initialization Error */
     Error_Handler(); 
   }
-  
+
   /*corresspond to ept_init*/
   msg = malloc(RPMSG_MAX_BUF_SIZE);
-  serdev_hdr = malloc(sizeof(struct serdev_rproc_hdr));
+  magic_number = malloc(sizeof(uint16_t));
 
   /*ept creation*/
   if(uart_rpmsg_send_ns_message(&UartHandle, RPMSG_SERVICE_NAME, 0x1, RPMSG_NS_CREATE)!= RPMSG_SUCCESS){
@@ -224,7 +214,7 @@ int main(void)
 
   /*launch reception interruption*/
   BSP_LED_On(LED2);
-  if(HAL_UART_Receive_IT(&UartHandle, (uint8_t *)serdev_hdr, serdev_hdr_size) != HAL_OK){
+  if(HAL_UART_Receive_IT(&UartHandle, (uint8_t *)magic_number, 2) != HAL_OK){
 	  /* Initialization Error */
 	  Error_Handler();
   }
@@ -243,14 +233,14 @@ int main(void)
 	  }
 
 	  /*uart_rpmsg_wait_for_message kind of*/
-	  if(HAL_UART_Receive_IT(&UartHandle, (uint8_t *)serdev_hdr, serdev_hdr_size) != HAL_OK){
+	  if(HAL_UART_Receive_IT(&UartHandle, (uint8_t *)magic_number, 2) != HAL_OK){
 		  Error_Handler();
 	  }
 
   }
 
   free(msg);
-  free(serdev_hdr);
+  free(magic_number);
 
 }
 
@@ -263,13 +253,18 @@ int main(void)
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *UartHandle)
 {
-	const uint8_t serdev_hdr_size = sizeof(struct serdev_rproc_hdr);
-	/* Set transmission flag: transfer complete */
-	if(serdev_hdr->magic_number == SERDEV_RPMSG_MAGIC_NUMBER){
-		if(HAL_UART_Receive(UartHandle,(uint8_t *)msg,serdev_hdr->len,0xFFFF)){
+	if(*magic_number == SERDEV_RPMSG_MAGIC_NUMBER){
+		if(HAL_UART_Receive(UartHandle,(uint8_t *)msg,sizeof(struct rpmsg_hdr),0x0400)){
 			Error_Handler();
 		}
+
+		if(HAL_UART_Receive(UartHandle,(uint8_t *)msg->data,msg->len,0x0400)){
+			Error_Handler();
+		}
+
 		BSP_LED_Toggle(LED2);
+
+		/* Set transmission flag: transfer complete */
 		UartReady = SET;
 	}
 
