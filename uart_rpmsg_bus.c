@@ -96,20 +96,6 @@ struct rpmsg_hdr {
 	u8 data[0];
 } __packed;
 
-/**
- * struct serdev_rproc_hdr - header for all serial communications
- * @magic_number: magic number
- * @len: length of the message (in bytes)
- * @msg_type: the kind of message that will be send
- *
- * Every message sent(/received) with serial communication use this header
- */
-struct serdev_rproc_hdr {
-	u16 magic_number; //0xbe57 #beST
-	u16 len;
-	u8 msg_type;
-} __packed;
-
 /*The magic number used to identify rpmsg communications through uart*/
 #define	SERDEV_RPMSG_MAGIC_NUMBER	(0xbe57)
 
@@ -433,7 +419,7 @@ static struct rpmsg_device *rpmsg_create_channel(struct serdev_info *srp,
 }
 
 /**
- * uart_rpmsg_send_off_chnl_raw() - send a message across to the remote processor
+ * uart_rpmsg_send_off_chnl_raw() - send a message across the remote processor
  * @rpdev: the rpmsg channel
  * @src: source address
  * @dst: destination address
@@ -469,10 +455,10 @@ static int uart_rpmsg_send_off_chnl_raw(struct rpmsg_device *rpdev,
 	struct serdev_device *serdev = srp->serdev;
 	struct device *dev = &rpdev->dev;
 	struct rpmsg_hdr *msg;
-	struct serdev_rproc_hdr s_hdr;
 	int msg_size = sizeof(struct rpmsg_hdr) + len;
-	int s_hdr_len = sizeof(struct serdev_rproc_hdr);
 	int ret;
+
+	u16 magic_number = SERDEV_RPMSG_MAGIC_NUMBER;
 
 	/* bcasting isn't allowed */
 	if (src == RPMSG_ADDR_ANY || dst == RPMSG_ADDR_ANY) {
@@ -503,10 +489,6 @@ static int uart_rpmsg_send_off_chnl_raw(struct rpmsg_device *rpdev,
 	if (!msg)
 		return -ENOMEM;
 
-	s_hdr.magic_number = SERDEV_RPMSG_MAGIC_NUMBER;
-	s_hdr.len = msg_size;
-	s_hdr.msg_type = SERDEV_RPROC_RPMSG;
-
 	msg->len = len;
 	msg->flags = 0;
 	msg->src = src;
@@ -521,16 +503,16 @@ static int uart_rpmsg_send_off_chnl_raw(struct rpmsg_device *rpdev,
 			 msg, sizeof(*msg) + msg->len, true);
 #endif
 	/*
-	 * The serdev_rproc_hdr is sent first to indicate what kind and how
+	 * The magic number is sent first to indicate what kind and how
 	 * much data the remote proc is going to receive.
 	 */
-	ret = serdev_device_write(serdev, (uint8_t *)&s_hdr, s_hdr_len, 0xFFFF);
+	ret = serdev_device_write(serdev, (uint8_t *)&magic_number, 2, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
 		goto err_send;
 	}
 
-	/* Then the RPMS itself is sent */
+	/* Then the RPMSG message itself is sent */
 	ret = serdev_device_write(serdev, (uint8_t *)msg, msg_size, 0xFFFF);
 	if (ret) {
 		dev_err(&serdev->dev, "uart_rpmsg_send failed: %d\n", ret);
@@ -663,17 +645,11 @@ static void rpmsg_recv_done(struct serdev_info *srp)
 	struct rpmsg_hdr *msg;
 	int err;
 
-	/* Transform the void* message in the appropriate type */
-	if (bm->msg_type == SERDEV_RPROC_RPMSG) {
-		msg = (struct rpmsg_hdr *)bm->rbuf;
+	msg = (struct rpmsg_hdr *)bm->rbuf;
 
-		err = rpmsg_recv_single(srp, &dev, msg, bm->msg_len);
-		if (err)
-			dev_err(&dev, "recv: something went wrong (%d)", err);
-
-	} else {
-		dev_err(&dev, "invalid message type");
-	}
+	err = rpmsg_recv_single(srp, &dev, msg, bm->msg_len);
+	if (err)
+		dev_err(&dev, "recv: something went wrong (%d)", err);
 }
 
 /* Buffer Manager functions*/
@@ -684,7 +660,7 @@ static int
 uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 {
 	struct buffer_manager *bm = &srp->bm;
-	struct serdev_rproc_hdr s_hdr;
+	struct rpmsg_hdr s_hdr;
 	struct device dev = srp->serdev->dev;
 	int *byte_left = &bm->rx_raw_left;
 	int ret, i;
@@ -697,6 +673,11 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 			if (*((uint16_t *)dat) == SERDEV_RPMSG_MAGIC_NUMBER) {
 			/* When done, we start append process */
 				bm->first_byte_rx = true;
+
+				/* We don't need store the magic number */
+				len -= 2;
+				dat += 2;
+
 				memcpy(bm->rx_raw_tail, dat, len);
 				*byte_left -= len;
 				bm->rx_raw_tail += len;
@@ -739,15 +720,12 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		 * minus the byte already received
 		 */
 		*byte_left = s_hdr.len - (byte_stored - sizeof(s_hdr));
-		bm->msg_len = s_hdr.len;
-		bm->msg_type = s_hdr.msg_type;
+		bm->msg_len = s_hdr.len + sizeof(s_hdr);
 		bm->flag_msg_recv = true;
-	} else if (*byte_left == 0) {
-		/* The message is fully received */
-		unsigned char *msg_start = bm->rx_raw_buffer + sizeof(s_hdr);
 
+	} else if (*byte_left == 0) {
 		/* The message is complete, we can copy it in rbuf */
-		memcpy(bm->rbuf, msg_start, bm->msg_len);
+		memcpy(bm->rbuf, bm->rx_raw_buffer, bm->msg_len);
 
 		/*Clean buffer manager*/
 		bm->flag_msg_recv = false;
@@ -865,13 +843,12 @@ static inline int buffer_manager_init(struct buffer_manager *bm,
 				      const int buf_size)
 {
 	int err = 0;
-	uint raw_b_size = buf_size + sizeof(struct serdev_rproc_hdr);
 
 	if (buf_size < 0)
 		return -EINVAL;
 
 	/*Memory alloc rx_raw_left and rbuf*/
-	bm->rx_raw_buffer = kzalloc(raw_b_size, GFP_KERNEL);
+	bm->rx_raw_buffer = kzalloc(buf_size, GFP_KERNEL);
 	if (!(bm->rx_raw_buffer))
 		return -ENOMEM;
 
@@ -934,16 +911,6 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	srp->serdev = serdev;
 	serdev_device_set_drvdata(serdev, srp);
 
-	/*
-	 * Instanciation of buf_manager, a new entity in charge of the data
-	 * gesture.
-	 */
-	/*bm = kzalloc(sizeof(*bm), GFP_KERNEL);
-	if (!bm) {
-		err = -ENOMEM;
-		goto err_bm;
-	}*/
-
 	err = buffer_manager_init(&bm, MAX_RPMSG_BUF_SIZE);
 	if (err)
 		goto err_bm;
@@ -964,9 +931,8 @@ static int uart_rpmsg_probe(struct serdev_device *serdev)
 	dev_dbg(&serdev->dev, "Using baudrate: %u\n", speed);
 
 	err = serdev_device_set_parity(serdev, SERDEV_PARITY_ODD);
-	if(err)
+	if (err)
 		goto err_set_parity;
-
 
 	serdev_device_set_flow_control(serdev, false);
 
