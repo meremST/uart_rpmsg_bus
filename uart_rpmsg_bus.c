@@ -695,18 +695,6 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		bm->rx_raw_tail += len;
 	}
 
-	/* byte_left can't be negative */
-	/* Enter in this situation means that we received more data that the msg
-	 * is supposed to have.
-	 * For now the driver is not able to receive a second message while the
-	 * first one isn't over.
-	 */
-	if (*byte_left < 0) {
-		dev_err(&dev, "Too much data received");
-		ret = -EINVAL;
-		goto err_bm;
-	}
-
 	byte_stored = bm->buf_size - *byte_left;
 	if (!bm->flag_msg_recv && byte_stored >= sizeof(s_hdr)) {
 		/* Check in the header to know how many data we're waiting */
@@ -722,6 +710,18 @@ uart_rpmsg_append_data(struct serdev_info *srp, unsigned char *dat, size_t len)
 		*byte_left = s_hdr.len - (byte_stored - sizeof(s_hdr));
 		bm->msg_len = s_hdr.len + sizeof(s_hdr);
 		bm->flag_msg_recv = true;
+	}
+
+	/* byte_left can't be negative */
+	/* Enter in this situation means that we received more data that the msg
+	 * is supposed to have.
+	 * For now the driver is not able to receive a second message while the
+	 * first one isn't over.
+	 */
+	if (*byte_left < 0) {
+		dev_err(&dev, "Too much data received");
+		ret = -EINVAL;
+		goto err_bm;
 
 	} else if (*byte_left == 0) {
 		/* The message is complete, we can copy it in rbuf */
