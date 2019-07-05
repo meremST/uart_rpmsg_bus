@@ -986,7 +986,6 @@ static void uart_rpmsg_remove(struct serdev_device *serdev)
 
 	/* Free memory of buffer manager */
 	buffer_manager_deinit(bm);
-	//kfree(bm);
 
 	idr_destroy(&srp->endpoints);
 }
