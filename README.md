@@ -1,5 +1,5 @@
 # uart_rpmsg_bus
-uart based remote processor messaging bus
+uart based remote processor messaging bus, UART folder contain the STM32f4 code.
 
 ## How to compile
 * modify setup.sh to adapt it to your own toolchain then run:
